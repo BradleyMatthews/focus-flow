@@ -1,0 +1,664 @@
+import { useState, useEffect, useRef } from "react";
+
+// ─── WHY WE USE CSS VARIABLES ────────────────────────────────────────────────
+// CSS variables (--var-name) let us define colours ONCE and reuse them
+// everywhere. When a user changes their category colour, we only update
+// one variable and the whole app reflects it. This is the same pattern
+// used by every major design system (Tailwind, Material Design, etc.)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DEFAULT_CATEGORIES = [
+  { id: "work", label: "Work", color: "#378ADD" },
+  { id: "health", label: "Health", color: "#1D9E75" },
+  { id: "personal", label: "Personal", color: "#D4537E" },
+  { id: "learning", label: "Learning", color: "#BA7517" },
+];
+
+const POINT_VALUES = [1, 2, 3, 5, 8]; // Fibonacci-ish — small tasks are 1, huge ones are 8
+
+// ─── WHY useState? ───────────────────────────────────────────────────────────
+// React's useState hook is how a component "remembers" things between renders.
+// Every time state changes, React re-renders only what changed — this is called
+// the "virtual DOM diffing" and it's what makes React fast.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export default function ProductivityApp() {
+  const [tasks, setTasks] = useState([]);
+  const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
+  const [view, setView] = useState("dashboard"); // "dashboard" | "tasks" | "settings"
+  const [newTask, setNewTask] = useState({ title: "", categoryId: "work", points: 3, note: "" });
+  const [showAddTask, setShowAddTask] = useState(false);
+  const [pointsAnimation, setPointsAnimation] = useState(false);
+  const [totalPoints, setTotalPoints] = useState(0);
+  const [dailyGoal, setDailyGoal] = useState(20);
+  const [editingCategory, setEditingCategory] = useState(null);
+  const [newCatLabel, setNewCatLabel] = useState("");
+  const [newCatColor, setNewCatColor] = useState("#378ADD");
+  const [filterCat, setFilterCat] = useState("all");
+  const [streak, setStreak] = useState(3); // Mock streak — would persist in a real backend
+  const animRef = useRef(null);
+
+  // ─── WHY useEffect? ─────────────────────────────────────────────────────────
+  // useEffect runs code AFTER the component renders. We use it here to
+  // recalculate total points whenever the `tasks` array changes.
+  // The array [tasks] is called the "dependency array" — think of it as saying
+  // "re-run this whenever tasks changes". An empty [] means "run once on mount".
+  // ─────────────────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const pts = tasks.filter(t => t.done).reduce((sum, t) => sum + t.points, 0);
+    setTotalPoints(pts);
+  }, [tasks]);
+
+  const completedToday = tasks.filter(t => t.done).length;
+  const totalTasks = tasks.length;
+  const progressPct = dailyGoal > 0 ? Math.min(100, Math.round((totalPoints / dailyGoal) * 100)) : 0;
+
+  function addTask() {
+    if (!newTask.title.trim()) return;
+    setTasks(prev => [...prev, {
+      id: Date.now(),
+      title: newTask.title.trim(),
+      categoryId: newTask.categoryId,
+      points: newTask.points,
+      note: newTask.note,
+      done: false,
+      createdAt: new Date().toISOString(),
+    }]);
+    setNewTask({ title: "", categoryId: "work", points: 3, note: "" });
+    setShowAddTask(false);
+  }
+
+  function toggleTask(id) {
+    setTasks(prev => prev.map(t => {
+      if (t.id !== id) return t;
+      if (!t.done) {
+        // Trigger points animation
+        setPointsAnimation(true);
+        clearTimeout(animRef.current);
+        animRef.current = setTimeout(() => setPointsAnimation(false), 800);
+      }
+      return { ...t, done: !t.done };
+    }));
+  }
+
+  function deleteTask(id) {
+    setTasks(prev => prev.filter(t => t.id !== id));
+  }
+
+  function getCat(id) {
+    return categories.find(c => c.id === id) || categories[0];
+  }
+
+  function addCategory() {
+    if (!newCatLabel.trim()) return;
+    setCategories(prev => [...prev, {
+      id: Date.now().toString(),
+      label: newCatLabel.trim(),
+      color: newCatColor,
+    }]);
+    setNewCatLabel("");
+    setNewCatColor("#378ADD");
+  }
+
+  const filteredTasks = filterCat === "all" ? tasks : tasks.filter(t => t.categoryId === filterCat);
+  const pendingTasks = filteredTasks.filter(t => !t.done);
+  const doneTasks = filteredTasks.filter(t => t.done);
+
+  // ─── STYLES ─────────────────────────────────────────────────────────────────
+  // We define styles as JS objects here (called "inline styles" or "style props").
+  // In a larger app you'd use CSS Modules or styled-components to separate concerns.
+  // For a single-file component this is clean and portable.
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  const s = {
+    app: {
+      fontFamily: "'DM Sans', 'Helvetica Neue', sans-serif",
+      minHeight: "100vh",
+      background: "#FAFAF8",
+      color: "#1a1a18",
+      maxWidth: 480,
+      margin: "0 auto",
+      paddingBottom: 80,
+    },
+    header: {
+      padding: "28px 24px 0",
+    },
+    greeting: {
+      fontSize: 22,
+      fontWeight: 600,
+      letterSpacing: "-0.4px",
+      marginBottom: 2,
+    },
+    sub: {
+      fontSize: 13,
+      color: "#888780",
+      marginBottom: 24,
+    },
+    card: {
+      background: "#fff",
+      borderRadius: 16,
+      border: "0.5px solid #E5E3DC",
+      padding: "16px 20px",
+      marginBottom: 12,
+    },
+    metricRow: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 10,
+      marginBottom: 12,
+    },
+    metricCard: {
+      background: "#F5F4F0",
+      borderRadius: 12,
+      padding: "14px 16px",
+    },
+    metricLabel: {
+      fontSize: 11,
+      color: "#888780",
+      letterSpacing: "0.5px",
+      textTransform: "uppercase",
+      marginBottom: 4,
+    },
+    metricValue: {
+      fontSize: 26,
+      fontWeight: 600,
+      letterSpacing: "-0.5px",
+    },
+    progressBar: {
+      height: 6,
+      background: "#EEEDE8",
+      borderRadius: 99,
+      overflow: "hidden",
+      margin: "12px 0 4px",
+    },
+    progressFill: (pct, color = "#1D9E75") => ({
+      height: "100%",
+      width: `${pct}%`,
+      background: color,
+      borderRadius: 99,
+      transition: "width 0.5s ease",
+    }),
+    sectionTitle: {
+      fontSize: 11,
+      fontWeight: 600,
+      letterSpacing: "0.8px",
+      textTransform: "uppercase",
+      color: "#888780",
+      margin: "20px 24px 8px",
+    },
+    taskItem: (done) => ({
+      display: "flex",
+      alignItems: "center",
+      gap: 12,
+      padding: "12px 16px",
+      background: done ? "#F9F9F7" : "#fff",
+      borderRadius: 12,
+      border: "0.5px solid #E5E3DC",
+      marginBottom: 6,
+      opacity: done ? 0.65 : 1,
+      transition: "opacity 0.2s",
+    }),
+    catDot: (color) => ({
+      width: 9,
+      height: 9,
+      borderRadius: "50%",
+      background: color,
+      flexShrink: 0,
+    }),
+    taskTitle: (done) => ({
+      flex: 1,
+      fontSize: 14,
+      fontWeight: 500,
+      textDecoration: done ? "line-through" : "none",
+      color: done ? "#aaa" : "#1a1a18",
+    }),
+    pointsBadge: (color) => ({
+      fontSize: 11,
+      fontWeight: 600,
+      color: color,
+      background: color + "18",
+      borderRadius: 6,
+      padding: "2px 8px",
+    }),
+    checkbox: (done, color) => ({
+      width: 20,
+      height: 20,
+      borderRadius: 6,
+      border: done ? "none" : `1.5px solid ${color}`,
+      background: done ? color : "transparent",
+      cursor: "pointer",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      flexShrink: 0,
+      transition: "all 0.15s",
+    }),
+    nav: {
+      position: "fixed",
+      bottom: 0,
+      left: "50%",
+      transform: "translateX(-50%)",
+      width: "100%",
+      maxWidth: 480,
+      background: "rgba(250,250,248,0.92)",
+      backdropFilter: "blur(12px)",
+      borderTop: "0.5px solid #E5E3DC",
+      display: "flex",
+      justifyContent: "space-around",
+      padding: "10px 0 18px",
+    },
+    navBtn: (active) => ({
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      gap: 3,
+      fontSize: 10,
+      fontWeight: active ? 600 : 400,
+      color: active ? "#1a1a18" : "#aaa",
+      cursor: "pointer",
+      background: "none",
+      border: "none",
+      padding: "4px 20px",
+      letterSpacing: "0.3px",
+    }),
+    fab: {
+      position: "fixed",
+      bottom: 72,
+      right: "calc(50% - 220px)",
+      width: 48,
+      height: 48,
+      borderRadius: "50%",
+      background: "#1a1a18",
+      color: "#fff",
+      fontSize: 24,
+      border: "none",
+      cursor: "pointer",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      boxShadow: "0 4px 16px rgba(0,0,0,0.18)",
+      transition: "transform 0.15s",
+    },
+    input: {
+      width: "100%",
+      fontSize: 14,
+      padding: "10px 12px",
+      borderRadius: 10,
+      border: "0.5px solid #D3D1C7",
+      background: "#FAFAF8",
+      color: "#1a1a18",
+      outline: "none",
+      boxSizing: "border-box",
+      marginBottom: 8,
+      fontFamily: "inherit",
+    },
+    select: {
+      width: "100%",
+      fontSize: 14,
+      padding: "10px 12px",
+      borderRadius: 10,
+      border: "0.5px solid #D3D1C7",
+      background: "#FAFAF8",
+      color: "#1a1a18",
+      outline: "none",
+      boxSizing: "border-box",
+      marginBottom: 8,
+      fontFamily: "inherit",
+      appearance: "none",
+    },
+    btn: (variant = "primary") => ({
+      padding: "10px 18px",
+      borderRadius: 10,
+      border: variant === "ghost" ? "0.5px solid #D3D1C7" : "none",
+      background: variant === "primary" ? "#1a1a18" : variant === "ghost" ? "transparent" : "#F5F4F0",
+      color: variant === "primary" ? "#fff" : "#1a1a18",
+      fontSize: 14,
+      fontWeight: 500,
+      cursor: "pointer",
+      fontFamily: "inherit",
+    }),
+  };
+
+  // ─── RENDER ──────────────────────────────────────────────────────────────────
+  // JSX looks like HTML but it's actually JavaScript. Every "tag" here is a
+  // function call under the hood. React.createElement("div", props, children).
+  // This is why we can mix logic (if statements, .map loops) with markup.
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  return (
+    <div style={s.app}>
+      {/* ── HEADER ── */}
+      <div style={s.header}>
+        <div style={s.greeting}>
+          {view === "dashboard" ? "Today" : view === "tasks" ? "Tasks" : "Settings"}
+        </div>
+        <div style={s.sub}>
+          {view === "dashboard"
+            ? `${completedToday} of ${totalTasks} tasks done · ${streak} day streak 🔥`
+            : view === "tasks"
+            ? `${tasks.filter(t => !t.done).length} pending · ${tasks.filter(t => t.done).length} done`
+            : "Manage categories & goals"}
+        </div>
+      </div>
+
+      {/* ── DASHBOARD VIEW ── */}
+      {view === "dashboard" && (
+        <div style={{ padding: "0 24px" }}>
+          {/* Points card */}
+          <div style={{ ...s.card, position: "relative", overflow: "hidden" }}>
+            <div style={{ fontSize: 11, color: "#888780", letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 4 }}>
+              Points today
+            </div>
+            <div style={{
+              fontSize: 48,
+              fontWeight: 700,
+              letterSpacing: "-2px",
+              lineHeight: 1,
+              color: pointsAnimation ? "#1D9E75" : "#1a1a18",
+              transition: "color 0.3s",
+            }}>
+              {totalPoints}
+              <span style={{ fontSize: 18, color: "#888780", fontWeight: 400, marginLeft: 6 }}>/ {dailyGoal}</span>
+            </div>
+            <div style={s.progressBar}>
+              <div style={s.progressFill(progressPct)} />
+            </div>
+            <div style={{ fontSize: 12, color: progressPct >= 100 ? "#1D9E75" : "#888780" }}>
+              {progressPct >= 100 ? "🎉 Daily goal reached!" : `${dailyGoal - totalPoints} pts to hit your goal`}
+            </div>
+          </div>
+
+          {/* Metrics row */}
+          <div style={s.metricRow}>
+            <div style={s.metricCard}>
+              <div style={s.metricLabel}>Completed</div>
+              <div style={s.metricValue}>{completedToday}</div>
+            </div>
+            <div style={s.metricCard}>
+              <div style={s.metricLabel}>Remaining</div>
+              <div style={s.metricValue}>{totalTasks - completedToday}</div>
+            </div>
+          </div>
+
+          {/* Category breakdown */}
+          {categories.map(cat => {
+            const catTasks = tasks.filter(t => t.categoryId === cat.id);
+            const catDone = catTasks.filter(t => t.done).length;
+            const catPts = catTasks.filter(t => t.done).reduce((s, t) => s + t.points, 0);
+            if (catTasks.length === 0) return null;
+            const pct = Math.round((catDone / catTasks.length) * 100);
+            return (
+              <div key={cat.id} style={{ ...s.card, padding: "12px 16px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <div style={s.catDot(cat.color)} />
+                    <span style={{ fontSize: 13, fontWeight: 500 }}>{cat.label}</span>
+                  </div>
+                  <span style={{ fontSize: 12, color: "#888780" }}>{catDone}/{catTasks.length} · {catPts}pts</span>
+                </div>
+                <div style={s.progressBar}>
+                  <div style={s.progressFill(pct, cat.color)} />
+                </div>
+              </div>
+            );
+          })}
+
+          {tasks.length === 0 && (
+            <div style={{ textAlign: "center", padding: "40px 0", color: "#aaa", fontSize: 14 }}>
+              No tasks yet. Tap + to add your first one.
+            </div>
+          )}
+
+          {/* Upcoming tasks preview */}
+          {pendingTasks.slice(0, 3).length > 0 && (
+            <>
+              <div style={s.sectionTitle}>Up next</div>
+              {pendingTasks.slice(0, 3).map(task => {
+                const cat = getCat(task.categoryId);
+                return (
+                  <div key={task.id} style={s.taskItem(false)}>
+                    <div
+                      style={s.checkbox(false, cat.color)}
+                      onClick={() => toggleTask(task.id)}
+                    />
+                    <div style={s.catDot(cat.color)} />
+                    <span style={s.taskTitle(false)}>{task.title}</span>
+                    <span style={s.pointsBadge(cat.color)}>{task.points}pt</span>
+                  </div>
+                );
+              })}
+              {pendingTasks.length > 3 && (
+                <div style={{ textAlign: "center", fontSize: 12, color: "#aaa", marginTop: 6, cursor: "pointer" }}
+                  onClick={() => setView("tasks")}>
+                  + {pendingTasks.length - 3} more tasks →
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ── TASKS VIEW ── */}
+      {view === "tasks" && (
+        <div style={{ padding: "0 24px" }}>
+          {/* Category filter pills */}
+          <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4, marginBottom: 12 }}>
+            {[{ id: "all", label: "All", color: "#888780" }, ...categories].map(cat => (
+              <button
+                key={cat.id}
+                onClick={() => setFilterCat(cat.id)}
+                style={{
+                  flexShrink: 0,
+                  padding: "5px 14px",
+                  borderRadius: 99,
+                  fontSize: 12,
+                  fontWeight: 500,
+                  border: filterCat === cat.id ? "none" : "0.5px solid #D3D1C7",
+                  background: filterCat === cat.id ? cat.color : "transparent",
+                  color: filterCat === cat.id ? "#fff" : "#666",
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                }}
+              >
+                {cat.label}
+              </button>
+            ))}
+          </div>
+
+          {pendingTasks.length > 0 && <div style={s.sectionTitle}>Pending</div>}
+          {pendingTasks.map(task => {
+            const cat = getCat(task.categoryId);
+            return (
+              <div key={task.id} style={s.taskItem(false)}>
+                <div style={s.checkbox(false, cat.color)} onClick={() => toggleTask(task.id)} />
+                <div style={s.catDot(cat.color)} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={s.taskTitle(false)}>{task.title}</div>
+                  {task.note && <div style={{ fontSize: 11, color: "#aaa", marginTop: 2 }}>{task.note}</div>}
+                </div>
+                <span style={s.pointsBadge(cat.color)}>{task.points}pt</span>
+                <button onClick={() => deleteTask(task.id)} style={{ background: "none", border: "none", color: "#ccc", cursor: "pointer", fontSize: 16, padding: "0 0 0 4px" }}>×</button>
+              </div>
+            );
+          })}
+
+          {doneTasks.length > 0 && <div style={s.sectionTitle}>Done</div>}
+          {doneTasks.map(task => {
+            const cat = getCat(task.categoryId);
+            return (
+              <div key={task.id} style={s.taskItem(true)}>
+                <div style={s.checkbox(true, cat.color)} onClick={() => toggleTask(task.id)}>
+                  <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+                    <path d="M1 4L3.5 6.5L9 1" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </div>
+                <div style={s.catDot(cat.color)} />
+                <span style={s.taskTitle(true)}>{task.title}</span>
+                <span style={s.pointsBadge(cat.color)}>{task.points}pt</span>
+              </div>
+            );
+          })}
+
+          {filteredTasks.length === 0 && (
+            <div style={{ textAlign: "center", padding: "40px 0", color: "#aaa", fontSize: 14 }}>
+              No tasks in this category yet.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── SETTINGS VIEW ── */}
+      {view === "settings" && (
+        <div style={{ padding: "0 24px" }}>
+          <div style={s.card}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 12 }}>Daily points goal</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <input
+                type="range" min={5} max={100} step={5} value={dailyGoal}
+                onChange={e => setDailyGoal(Number(e.target.value))}
+                style={{ flex: 1 }}
+              />
+              <span style={{ fontSize: 20, fontWeight: 600, minWidth: 36 }}>{dailyGoal}</span>
+            </div>
+          </div>
+
+          <div style={s.sectionTitle}>Categories</div>
+          {categories.map(cat => (
+            <div key={cat.id} style={{ ...s.card, display: "flex", alignItems: "center", gap: 12 }}>
+              <input type="color" value={cat.color}
+                onChange={e => setCategories(prev => prev.map(c => c.id === cat.id ? { ...c, color: e.target.value } : c))}
+                style={{ width: 28, height: 28, border: "none", borderRadius: 6, cursor: "pointer", padding: 0, background: "none" }}
+              />
+              {editingCategory === cat.id ? (
+                <input
+                  autoFocus
+                  value={cat.label}
+                  onChange={e => setCategories(prev => prev.map(c => c.id === cat.id ? { ...c, label: e.target.value } : c))}
+                  onBlur={() => setEditingCategory(null)}
+                  style={{ ...s.input, marginBottom: 0, flex: 1 }}
+                />
+              ) : (
+                <span style={{ flex: 1, fontSize: 14, fontWeight: 500 }}>{cat.label}</span>
+              )}
+              <button onClick={() => setEditingCategory(cat.id)} style={{ background: "none", border: "none", color: "#aaa", cursor: "pointer", fontSize: 13 }}>
+                edit
+              </button>
+            </div>
+          ))}
+
+          {/* Add category */}
+          <div style={s.card}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Add category</div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input type="color" value={newCatColor} onChange={e => setNewCatColor(e.target.value)}
+                style={{ width: 32, height: 32, border: "none", borderRadius: 8, cursor: "pointer", padding: 0, background: "none", flexShrink: 0 }}
+              />
+              <input
+                placeholder="Category name"
+                value={newCatLabel}
+                onChange={e => setNewCatLabel(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && addCategory()}
+                style={{ ...s.input, marginBottom: 0, flex: 1 }}
+              />
+              <button onClick={addCategory} style={{ ...s.btn("primary"), whiteSpace: "nowrap" }}>Add</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── ADD TASK MODAL ── */}
+      {showAddTask && (
+        <div
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "flex-end", zIndex: 100 }}
+          onClick={e => e.target === e.currentTarget && setShowAddTask(false)}
+        >
+          <div style={{
+            background: "#fff",
+            borderRadius: "20px 20px 0 0",
+            padding: "24px 24px 40px",
+            width: "100%",
+            maxWidth: 480,
+            margin: "0 auto",
+          }}>
+            <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 16 }}>New task</div>
+            <input
+              placeholder="What needs to be done?"
+              value={newTask.title}
+              onChange={e => setNewTask(p => ({ ...p, title: e.target.value }))}
+              onKeyDown={e => e.key === "Enter" && addTask()}
+              style={s.input}
+              autoFocus
+            />
+            <textarea
+              placeholder="Add a note (optional)"
+              value={newTask.note}
+              onChange={e => setNewTask(p => ({ ...p, note: e.target.value }))}
+              style={{ ...s.input, resize: "none", height: 60 }}
+            />
+            <select
+              value={newTask.categoryId}
+              onChange={e => setNewTask(p => ({ ...p, categoryId: e.target.value }))}
+              style={s.select}
+            >
+              {categories.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+            </select>
+
+            {/* Points selector */}
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 12, color: "#888", marginBottom: 8 }}>Points — how much effort is this?</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                {POINT_VALUES.map(p => (
+                  <button
+                    key={p}
+                    onClick={() => setNewTask(prev => ({ ...prev, points: p }))}
+                    style={{
+                      flex: 1,
+                      padding: "8px 0",
+                      borderRadius: 10,
+                      border: newTask.points === p ? "none" : "0.5px solid #D3D1C7",
+                      background: newTask.points === p ? "#1a1a18" : "#F5F4F0",
+                      color: newTask.points === p ? "#fff" : "#1a1a18",
+                      fontSize: 14,
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      fontFamily: "inherit",
+                    }}
+                  >
+                    {p}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => setShowAddTask(false)} style={{ ...s.btn("ghost"), flex: 1 }}>Cancel</button>
+              <button onClick={addTask} style={{ ...s.btn("primary"), flex: 2 }}>Add task</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── FAB (Floating Action Button) ── */}
+      <button
+        style={s.fab}
+        onClick={() => setShowAddTask(true)}
+      >
+        +
+      </button>
+
+      {/* ── BOTTOM NAV ── */}
+      <nav style={s.nav}>
+        {[
+          { id: "dashboard", label: "Today", icon: "◈" },
+          { id: "tasks", label: "Tasks", icon: "☰" },
+          { id: "settings", label: "Settings", icon: "⊙" },
+        ].map(tab => (
+          <button key={tab.id} style={s.navBtn(view === tab.id)} onClick={() => setView(tab.id)}>
+            <span style={{ fontSize: 18 }}>{tab.icon}</span>
+            {tab.label}
+          </button>
+        ))}
+      </nav>
+    </div>
+  );
+}
