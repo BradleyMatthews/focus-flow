@@ -8,12 +8,94 @@
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   </head>
-  <body>
+  <body style="margin:0;padding:0;background:#FAFAF8;">
     <div id="root"></div>
-    <script type="text/babel" src="index.jsx"></script>
-    <script type="text/babel">
-      const root = ReactDOM.createRoot(document.getElementById('root'));
-      root.render(React.createElement(ProductivityApp));
-    </script>
-  </body>
-</html>
+    <script type="text/babel" data-type="module">
+      const { useState, useEffect, useRef } = React;
+
+      const DEFAULT_CATEGORIES = [
+        { id: "work", label: "Work", color: "#378ADD" },
+        { id: "health", label: "Health", color: "#1D9E75" },
+        { id: "personal", label: "Personal", color: "#D4537E" },
+        { id: "learning", label: "Learning", color: "#BA7517" },
+      ];
+
+      const POINT_VALUES = [1, 2, 3, 5, 8];
+
+      function ProductivityApp() {
+        const [tasks, setTasks] = useState([]);
+        const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
+        const [view, setView] = useState("dashboard");
+        const [newTask, setNewTask] = useState({ title: "", categoryId: "work", points: 3, note: "" });
+        const [showAddTask, setShowAddTask] = useState(false);
+        const [pointsAnimation, setPointsAnimation] = useState(false);
+        const [totalPoints, setTotalPoints] = useState(0);
+        const [dailyGoal, setDailyGoal] = useState(20);
+        const [editingCategory, setEditingCategory] = useState(null);
+        const [newCatLabel, setNewCatLabel] = useState("");
+        const [newCatColor, setNewCatColor] = useState("#378ADD");
+        const [filterCat, setFilterCat] = useState("all");
+        const [streak] = useState(3);
+        const animRef = useRef(null);
+
+        useEffect(() => {
+          const pts = tasks.filter(t => t.done).reduce((sum, t) => sum + t.points, 0);
+          setTotalPoints(pts);
+        }, [tasks]);
+
+        const completedToday = tasks.filter(t => t.done).length;
+        const totalTasks = tasks.length;
+        const progressPct = dailyGoal > 0 ? Math.min(100, Math.round((totalPoints / dailyGoal) * 100)) : 0;
+        const pendingTasks = (filterCat === "all" ? tasks : tasks.filter(t => t.categoryId === filterCat)).filter(t => !t.done);
+        const doneTasks = (filterCat === "all" ? tasks : tasks.filter(t => t.categoryId === filterCat)).filter(t => t.done);
+        const filteredTasks = filterCat === "all" ? tasks : tasks.filter(t => t.categoryId === filterCat);
+
+        function addTask() {
+          if (!newTask.title.trim()) return;
+          setTasks(prev => [...prev, {
+            id: Date.now(), title: newTask.title.trim(), categoryId: newTask.categoryId,
+            points: newTask.points, note: newTask.note, done: false, createdAt: new Date().toISOString(),
+          }]);
+          setNewTask({ title: "", categoryId: "work", points: 3, note: "" });
+          setShowAddTask(false);
+        }
+
+        function toggleTask(id) {
+          setTasks(prev => prev.map(t => {
+            if (t.id !== id) return t;
+            if (!t.done) {
+              setPointsAnimation(true);
+              clearTimeout(animRef.current);
+              animRef.current = setTimeout(() => setPointsAnimation(false), 800);
+            }
+            return { ...t, done: !t.done };
+          }));
+        }
+
+        function deleteTask(id) { setTasks(prev => prev.filter(t => t.id !== id)); }
+        function getCat(id) { return categories.find(c => c.id === id) || categories[0]; }
+
+        function addCategory() {
+          if (!newCatLabel.trim()) return;
+          setCategories(prev => [...prev, { id: Date.now().toString(), label: newCatLabel.trim(), color: newCatColor }]);
+          setNewCatLabel(""); setNewCatColor("#378ADD");
+        }
+
+        const s = {
+          app: { fontFamily: "'DM Sans', 'Helvetica Neue', sans-serif", minHeight: "100vh", background: "#FAFAF8", color: "#1a1a18", maxWidth: 480, margin: "0 auto", paddingBottom: 80 },
+          header: { padding: "28px 24px 0" },
+          greeting: { fontSize: 22, fontWeight: 600, letterSpacing: "-0.4px", marginBottom: 2 },
+          sub: { fontSize: 13, color: "#888780", marginBottom: 24 },
+          card: { background: "#fff", borderRadius: 16, border: "0.5px solid #E5E3DC", padding: "16px 20px", marginBottom: 12 },
+          metricRow: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 },
+          metricCard: { background: "#F5F4F0", borderRadius: 12, padding: "14px 16px" },
+          metricLabel: { fontSize: 11, color: "#888780", letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 4 },
+          metricValue: { fontSize: 26, fontWeight: 600, letterSpacing: "-0.5px" },
+          progressBar: { height: 6, background: "#EEEDE8", borderRadius: 99, overflow: "hidden", margin: "12px 0 4px" },
+          progressFill: (pct, color = "#1D9E75") => ({ height: "100%", width: `${pct}%`, background: color, borderRadius: 99, transition: "width 0.5s ease" }),
+          sectionTitle: { fontSize: 11, fontWeight: 600, letterSpacing: "0.8px", textTransform: "uppercase", color: "#888780", margin: "20px 0 8px" },
+          taskItem: (done) => ({ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", background: done ? "#F9F9F7" : "#fff", borderRadius: 12, border: "0.5px solid #E5E3DC", marginBottom: 6, opacity: done ? 0.65 : 1, transition: "opacity 0.2s" }),
+          catDot: (color) => ({ width: 9, height: 9, borderRadius: "50%", background: color, flexShrink: 0 }),
+          taskTitle: (done) => ({ flex: 1, fontSize: 14, fontWeight: 500, textDecoration: done ? "line-through" : "none", color: done ? "#aaa" : "#1a1a18" }),
+          pointsBadge: (color) => ({ fontSize: 11, fontWeight: 600, color: color, background: color + "18", borderRadius: 6, padding: "2px 8px" }),
+          checkbox: (done, color) => ({ width: 20, height: 20, borderRadius: 6, border: done ? "none" : `1.5px solid
