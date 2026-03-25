@@ -36,6 +36,8 @@
         const [newCatColor, setNewCatColor] = useState("#378ADD");
         const [filterCat, setFilterCat] = useState("all");
         const [streak] = useState(3);
+        const [dashFilterCat, setDashFilterCat] = useState("all");
+        const [showAllTasks, setShowAllTasks] = useState(false);
         const animRef = useRef(null);
 
         useEffect(() => {
@@ -49,6 +51,8 @@
         const pendingTasks = (filterCat === "all" ? tasks : tasks.filter(t => t.categoryId === filterCat)).filter(t => !t.done);
         const doneTasks = (filterCat === "all" ? tasks : tasks.filter(t => t.categoryId === filterCat)).filter(t => t.done);
         const filteredTasks = filterCat === "all" ? tasks : tasks.filter(t => t.categoryId === filterCat);
+        const dashPending = (dashFilterCat === "all" ? tasks : tasks.filter(t => t.categoryId === dashFilterCat)).filter(t => !t.done);
+        const dashTasksToShow = showAllTasks ? dashPending : dashPending.slice(0, 10);
 
         function addTask() {
           if (!newTask.title.trim()) return;
@@ -153,24 +157,44 @@
                     </div>
                   );
                 })}
-                {tasks.length === 0 && <div style={{ textAlign: "center", padding: "40px 0", color: "#aaa", fontSize: 14 }}>No tasks yet. Tap + to add your first one.</div>}
-                {pendingTasks.slice(0, 3).length > 0 && (
-                  <>
-                    <div style={s.sectionTitle}>Up next</div>
-                    {pendingTasks.slice(0, 3).map(task => {
-                      const cat = getCat(task.categoryId);
-                      return (
-                        <div key={task.id} style={s.taskItem(false)}>
-                          <div style={s.checkbox(false, cat.color)} onClick={() => toggleTask(task.id)} />
-                          <div style={s.catDot(cat.color)} />
-                          <span style={s.taskTitle(false)}>{task.title}</span>
-                          <span style={s.pointsBadge(cat.color)}>{task.points}pt</span>
-                        </div>
-                      );
-                    })}
-                    {pendingTasks.length > 3 && <div style={{ textAlign: "center", fontSize: 12, color: "#aaa", marginTop: 6, cursor: "pointer" }} onClick={() => setView("tasks")}>+ {pendingTasks.length - 3} more tasks →</div>}
-                  </>
-                )}
+                                      <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4, marginBottom: 12 }}>
+                                        {[{ id: "all", label: "All", color: "#888780" }, ...categories].map(cat => (
+                                          <button
+                                            key={cat.id}
+                                            onClick={() => { setDashFilterCat(cat.id); setShowAllTasks(false); }}
+                                            style={{ flexShrink: 0, padding: "5px 14px", borderRadius: 99, fontSize: 12, fontWeight: 500, border: dashFilterCat === cat.id ? "none" : "0.5px solid #D3D1C7", background: dashFilterCat === cat.id ? cat.color : "transparent", color: dashFilterCat === cat.id ? "#fff" : "#666", cursor: "pointer", fontFamily: "inherit" }}
+                                          >
+                                            {cat.label}
+                                          </button>
+                                        ))}
+                                      </div>
+                                      {tasks.length === 0 && <div style={{ textAlign: "center", padding: "40px 0", color: "#aaa", fontSize: 14 }}>No tasks yet. Tap + to add your first one.</div>}
+                                      {dashPending.length > 0 && (
+                                        <>
+                                          <div style={s.sectionTitle}>Up next</div>
+                                          {dashTasksToShow.map(task => {
+                                            const cat = getCat(task.categoryId);
+                                            return (
+                                              <div key={task.id} style={s.taskItem(false)}>
+                                                <div style={s.checkbox(false, cat.color)} onClick={() => toggleTask(task.id)} />
+                                                <div style={s.catDot(cat.color)} />
+                                                <span style={s.taskTitle(false)}>{task.title}</span>
+                                                <span style={s.pointsBadge(cat.color)}>{task.points}pt</span>
+                                              </div>
+                                            );
+                                          })}
+                                          {!showAllTasks && dashPending.length > 10 && (
+                                            <div style={{ textAlign: "center", fontSize: 12, color: "#aaa", marginTop: 6, cursor: "pointer" }} onClick={() => setShowAllTasks(true)}>
+                                              + {dashPending.length - 10} more tasks — tap to expand
+                                            </div>
+                                          )}
+                                          {showAllTasks && (
+                                            <div style={{ textAlign: "center", fontSize: 12, color: "#aaa", marginTop: 6, cursor: "pointer" }} onClick={() => setShowAllTasks(false)}>
+                                              Show less ↑
+                                            </div>
+                                          )}
+                                        </>
+                                      )}
               </div>
             )}
 
