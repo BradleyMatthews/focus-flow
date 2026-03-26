@@ -7,11 +7,24 @@
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+      @keyframes timerPulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.6; }
+      }
+      @keyframes completePop {
+        0% { transform: scale(1); }
+        50% { transform: scale(1.08); }
+        100% { transform: scale(1); }
+      }
+      .timer-running { animation: timerPulse 2s ease-in-out infinite; }
+      .timer-complete { animation: completePop 0.4s ease; }
+    </style>
   </head>
   <body style="margin:0;padding:0;background:#FAFAF8;">
     <div id="root"></div>
     <script type="text/babel" data-type="module">
-      const { useState, useEffect, useRef } = React;
+      const { useState, useEffect, useRef, useCallback } = React;
 
       const DEFAULT_CATEGORIES = [
         { id: "work", label: "Work 🚀", color: "#378ADD" },
@@ -22,7 +35,23 @@
 
       const POINT_VALUES = [1, 2, 3, 5, 8];
 
+      // ─── FOCUS MODES ────────────────────────────────────────────────────────
+      // Each mode has default work/break times (in minutes) and a colour accent.
+      // The user can customise work/break on Pomodoro and duration on Sprint/Deep.
+      const FOCUS_MODES = [
+        { id: "pomodoro", label: "Pomodoro", icon: "🍅", color: "#D4537E", defaultWork: 25, defaultBreak: 5 },
+        { id: "sprint",   label: "Sprint",   icon: "⚡", color: "#BA7517", defaultWork: 15, defaultBreak: 0 },
+        { id: "deep",     label: "Deep Work", icon: "🎯", color: "#378ADD", defaultWork: 90, defaultBreak: 0 },
+      ];
+
+      function formatTime(seconds) {
+        const m = Math.floor(seconds / 60).toString().padStart(2, "0");
+        const s = (seconds % 60).toString().padStart(2, "0");
+        return `${m}:${s}`;
+      }
+
       function ProductivityApp() {
+        // ── CORE STATE ──────────────────────────────────────────────────────
         const [tasks, setTasks] = useState([]);
         const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
         const [view, setView] = useState("dashboard");
@@ -40,6 +69,23 @@
         const [showAllTasks, setShowAllTasks] = useState(false);
         const animRef = useRef(null);
 
+        // ── FOCUS TIMER STATE ───────────────────────────────────────────────
+        const [focusMode, setFocusMode] = useState("pomodoro");
+        const [timerPhase, setTimerPhase] = useState("work"); // "work" | "break"
+        const [timerRunning, setTimerRunning] = useState(false);
+        const [timerComplete, setTimerComplete] = useState(false);
+        const [secondsLeft, setSecondsLeft] = useState(25 * 60);
+        const [linkedTaskId, setLinkedTaskId] = useState(null);
+        const [sessionCount, setSessionCount] = useState(0);
+        // Customisable durations per mode
+        const [pomodoroWork, setPomodoroWork] = useState(25);
+        const [pomodoroBreak, setPomodoroBreak] = useState(5);
+        const [sprintWork, setSprintWork] = useState(15);
+        const [deepWork, setDeepWork] = useState(90);
+        const [showTimerSettings, setShowTimerSettings] = useState(false);
+        const timerRef = useRef(null);
+
+        // ── DERIVED VALUES ──────────────────────────────────────────────────
         useEffect(() => {
           const pts = tasks.filter(t => t.done).reduce((sum, t) => sum + t.points, 0);
           setTotalPoints(pts);
@@ -54,6 +100,75 @@
         const dashPending = (dashFilterCat === "all" ? tasks : tasks.filter(t => t.categoryId === dashFilterCat)).filter(t => !t.done);
         const dashTasksToShow = showAllTasks ? dashPending : dashPending.slice(0, 10);
 
+        // ── TIMER LOGIC ─────────────────────────────────────────────────────
+        // useCallback memoises this function so it doesn't get recreated every render
+        const getCurrentDuration = useCallback((mode, phase) => {
+          if (mode === "pomodoro") return (phase === "work" ? pomodoroWork : pomodoroBreak) * 60;
+          if (mode === "sprint") return sprintWork * 60;
+          return deepWork * 60;
+        }, [pomodoroWork, pomodoroBreak, sprintWork, deepWork]);
+
+        // Reset timer when mode changes
+        useEffect(() => {
+          setTimerRunning(false);
+          setTimerPhase("work");
+          setTimerComplete(false);
+          setSecondsLeft(getCurrentDuration(focusMode, "work"));
+          clearInterval(timerRef.current);
+        }, [focusMode]);
+
+        // The countdown tick
+        useEffect(() => {
+          if (!timerRunning) return;
+          timerRef.current = setInterval(() => {
+            setSecondsLeft(prev => {
+              if (prev <= 1) {
+                clearInterval(timerRef.current);
+                setTimerRunning(false);
+                setTimerComplete(true);
+                setSessionCount(c => c + 1);
+                // Auto-complete linked task if it's a work phase
+                if (timerPhase === "work" && linkedTaskId) {
+                  setTasks(ts => ts.map(t => {
+                    if (t.id !== linkedTaskId || t.done) return t;
+                    setPointsAnimation(true);
+                    clearTimeout(animRef.current);
+                    animRef.current = setTimeout(() => setPointsAnimation(false), 800);
+                    return { ...t, done: true };
+                  }));
+                }
+                return 0;
+              }
+              return prev - 1;
+            });
+          }, 1000);
+          return () => clearInterval(timerRef.current);
+        }, [timerRunning, timerPhase, linkedTaskId]);
+
+        function startTimer() { setTimerRunning(true); setTimerComplete(false); }
+        function pauseTimer() { setTimerRunning(false); clearInterval(timerRef.current); }
+
+        function resetTimer() {
+          setTimerRunning(false);
+          setTimerComplete(false);
+          clearInterval(timerRef.current);
+          setTimerPhase("work");
+          setSecondsLeft(getCurrentDuration(focusMode, "work"));
+        }
+
+        function startBreak() {
+          setTimerPhase("break");
+          setTimerComplete(false);
+          setSecondsLeft(getCurrentDuration(focusMode, "break"));
+          setTimerRunning(true);
+        }
+
+        const currentMode = FOCUS_MODES.find(m => m.id === focusMode);
+        const totalDuration = getCurrentDuration(focusMode, timerPhase);
+        const progressAngle = ((totalDuration - secondsLeft) / totalDuration) * 360;
+        const linkedTask = tasks.find(t => t.id === linkedTaskId);
+
+        // ── TASK FUNCTIONS ──────────────────────────────────────────────────
         function addTask() {
           if (!newTask.title.trim()) return;
           setTasks(prev => [...prev, {
@@ -85,6 +200,7 @@
           setNewCatLabel(""); setNewCatColor("#378ADD");
         }
 
+        // ── STYLES ──────────────────────────────────────────────────────────
         const s = {
           app: { fontFamily: "'DM Sans', 'Helvetica Neue', sans-serif", minHeight: "100vh", background: "#FAFAF8", color: "#1a1a18", maxWidth: 480, margin: "0 auto", paddingBottom: 80 },
           header: { padding: "28px 24px 0" },
@@ -104,24 +220,55 @@
           pointsBadge: (color) => ({ fontSize: 11, fontWeight: 600, color: color, background: color + "18", borderRadius: 6, padding: "2px 8px" }),
           checkbox: (done, color) => ({ width: 20, height: 20, borderRadius: 6, border: done ? "none" : `1.5px solid ${color}`, background: done ? color : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.15s" }),
           nav: { position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, background: "rgba(250,250,248,0.92)", backdropFilter: "blur(12px)", borderTop: "0.5px solid #E5E3DC", display: "flex", justifyContent: "space-around", padding: "10px 0 18px" },
-          navBtn: (active) => ({ display: "flex", flexDirection: "column", alignItems: "center", gap: 3, fontSize: 10, fontWeight: active ? 600 : 400, color: active ? "#1a1a18" : "#aaa", cursor: "pointer", background: "none", border: "none", padding: "4px 20px", letterSpacing: "0.3px" }),
+          navBtn: (active) => ({ display: "flex", flexDirection: "column", alignItems: "center", gap: 3, fontSize: 10, fontWeight: active ? 600 : 400, color: active ? "#1a1a18" : "#aaa", cursor: "pointer", background: "none", border: "none", padding: "4px 16px", letterSpacing: "0.3px" }),
           fab: { position: "fixed", bottom: 72, right: "calc(50% - 220px)", width: 48, height: 48, borderRadius: "50%", background: "#1a1a18", color: "#fff", fontSize: 24, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 16px rgba(0,0,0,0.18)", transition: "transform 0.15s" },
           input: { width: "100%", fontSize: 14, padding: "10px 12px", borderRadius: 10, border: "0.5px solid #D3D1C7", background: "#FAFAF8", color: "#1a1a18", outline: "none", boxSizing: "border-box", marginBottom: 8, fontFamily: "inherit" },
           select: { width: "100%", fontSize: 14, padding: "10px 12px", borderRadius: 10, border: "0.5px solid #D3D1C7", background: "#FAFAF8", color: "#1a1a18", outline: "none", boxSizing: "border-box", marginBottom: 8, fontFamily: "inherit", appearance: "none" },
           btn: (variant = "primary") => ({ padding: "10px 18px", borderRadius: 10, border: variant === "ghost" ? "0.5px solid #D3D1C7" : "none", background: variant === "primary" ? "#1a1a18" : variant === "ghost" ? "transparent" : "#F5F4F0", color: variant === "primary" ? "#fff" : "#1a1a18", fontSize: 14, fontWeight: 500, cursor: "pointer", fontFamily: "inherit" }),
         };
 
+        // ── SVG RING HELPER ─────────────────────────────────────────────────
+        // Draws a circular progress ring around the timer countdown.
+        // We convert the progress angle to SVG arc coordinates using trigonometry.
+        function TimerRing({ progress, color, size = 220 }) {
+          const r = (size / 2) - 12;
+          const cx = size / 2;
+          const cy = size / 2;
+          const angle = (progress / 360) * 2 * Math.PI - Math.PI / 2;
+          const x = cx + r * Math.cos(angle);
+          const y = cy + r * Math.sin(angle);
+          const largeArc = progress > 180 ? 1 : 0;
+          const circumference = 2 * Math.PI * r;
+          return (
+            <svg width={size} height={size} style={{ position: "absolute", top: 0, left: 0 }}>
+              <circle cx={cx} cy={cy} r={r} fill="none" stroke="#EEEDE8" strokeWidth="4" />
+              {progress > 0 && (
+                <path
+                  d={`M ${cx} ${cy - r} A ${r} ${r} 0 ${largeArc} 1 ${x} ${y}`}
+                  fill="none" stroke={color} strokeWidth="4" strokeLinecap="round"
+                />
+              )}
+            </svg>
+          );
+        }
+
+        // ── RENDER ───────────────────────────────────────────────────────────
         return (
           <div style={s.app}>
+            {/* HEADER */}
             <div style={s.header}>
-              <div style={s.greeting}>{view === "dashboard" ? "Today" : view === "tasks" ? "Tasks" : "Settings"}</div>
+              <div style={s.greeting}>
+                {view === "dashboard" ? "Today" : view === "tasks" ? "Tasks" : view === "focus" ? "Focus" : "Settings"}
+              </div>
               <div style={s.sub}>
                 {view === "dashboard" ? `${completedToday} of ${totalTasks} tasks done · ${streak} day streak 🔥`
                   : view === "tasks" ? `${tasks.filter(t => !t.done).length} pending · ${tasks.filter(t => t.done).length} done`
+                  : view === "focus" ? `${sessionCount} session${sessionCount !== 1 ? "s" : ""} completed today`
                   : "Manage categories & goals"}
               </div>
             </div>
 
+            {/* ── DASHBOARD VIEW ── */}
             {view === "dashboard" && (
               <div style={{ padding: "0 24px" }}>
                 <div style={{ ...s.card, position: "relative", overflow: "hidden" }}>
@@ -141,7 +288,7 @@
                 {categories.map(cat => {
                   const catTasks = tasks.filter(t => t.categoryId === cat.id);
                   const catDone = catTasks.filter(t => t.done).length;
-                  const catPts = catTasks.filter(t => t.done).reduce((s, t) => s + t.points, 0);
+                  const catPts = catTasks.filter(t => t.done).reduce((sum, t) => sum + t.points, 0);
                   if (catTasks.length === 0) return null;
                   const pct = Math.round((catDone / catTasks.length) * 100);
                   return (
@@ -157,47 +304,45 @@
                     </div>
                   );
                 })}
-                                      <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4, marginBottom: 12 }}>
-                                        {[{ id: "all", label: "All", color: "#888780" }, ...categories].map(cat => (
-                                          <button
-                                            key={cat.id}
-                                            onClick={() => { setDashFilterCat(cat.id); setShowAllTasks(false); }}
-                                            style={{ flexShrink: 0, padding: "5px 14px", borderRadius: 99, fontSize: 12, fontWeight: 500, border: dashFilterCat === cat.id ? "none" : "0.5px solid #D3D1C7", background: dashFilterCat === cat.id ? cat.color : "transparent", color: dashFilterCat === cat.id ? "#fff" : "#666", cursor: "pointer", fontFamily: "inherit" }}
-                                          >
-                                            {cat.label}
-                                          </button>
-                                        ))}
-                                      </div>
-                                      {tasks.length === 0 && <div style={{ textAlign: "center", padding: "40px 0", color: "#aaa", fontSize: 14 }}>No tasks yet. Tap + to add your first one.</div>}
-                                      {dashPending.length > 0 && (
-                                        <>
-                                          <div style={s.sectionTitle}>Up next</div>
-                                          {dashTasksToShow.map(task => {
-                                            const cat = getCat(task.categoryId);
-                                            return (
-                                              <div key={task.id} style={s.taskItem(false)}>
-                                                <div style={s.checkbox(false, cat.color)} onClick={() => toggleTask(task.id)} />
-                                                <div style={s.catDot(cat.color)} />
-                                                <span style={s.taskTitle(false)}>{task.title}</span>
-                                                <span style={s.pointsBadge(cat.color)}>{task.points}pt</span>
-                                              </div>
-                                            );
-                                          })}
-                                          {!showAllTasks && dashPending.length > 10 && (
-                                            <div style={{ textAlign: "center", fontSize: 12, color: "#aaa", marginTop: 6, cursor: "pointer" }} onClick={() => setShowAllTasks(true)}>
-                                              + {dashPending.length - 10} more tasks — tap to expand
-                                            </div>
-                                          )}
-                                          {showAllTasks && (
-                                            <div style={{ textAlign: "center", fontSize: 12, color: "#aaa", marginTop: 6, cursor: "pointer" }} onClick={() => setShowAllTasks(false)}>
-                                              Show less ↑
-                                            </div>
-                                          )}
-                                        </>
-                                      )}
+                <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4, marginBottom: 12 }}>
+                  {[{ id: "all", label: "All", color: "#888780" }, ...categories].map(cat => (
+                    <button key={cat.id} onClick={() => { setDashFilterCat(cat.id); setShowAllTasks(false); }}
+                      style={{ flexShrink: 0, padding: "5px 14px", borderRadius: 99, fontSize: 12, fontWeight: 500, border: dashFilterCat === cat.id ? "none" : "0.5px solid #D3D1C7", background: dashFilterCat === cat.id ? cat.color : "transparent", color: dashFilterCat === cat.id ? "#fff" : "#666", cursor: "pointer", fontFamily: "inherit" }}>
+                      {cat.label}
+                    </button>
+                  ))}
+                </div>
+                {tasks.length === 0 && <div style={{ textAlign: "center", padding: "40px 0", color: "#aaa", fontSize: 14 }}>No tasks yet. Tap + to add your first one.</div>}
+                {dashPending.length > 0 && (
+                  <>
+                    <div style={s.sectionTitle}>Up next</div>
+                    {dashTasksToShow.map(task => {
+                      const cat = getCat(task.categoryId);
+                      return (
+                        <div key={task.id} style={s.taskItem(false)}>
+                          <div style={s.checkbox(false, cat.color)} onClick={() => toggleTask(task.id)} />
+                          <div style={s.catDot(cat.color)} />
+                          <span style={s.taskTitle(false)}>{task.title}</span>
+                          <span style={s.pointsBadge(cat.color)}>{task.points}pt</span>
+                        </div>
+                      );
+                    })}
+                    {!showAllTasks && dashPending.length > 10 && (
+                      <div style={{ textAlign: "center", fontSize: 12, color: "#aaa", marginTop: 6, cursor: "pointer" }} onClick={() => setShowAllTasks(true)}>
+                        + {dashPending.length - 10} more tasks — tap to expand
+                      </div>
+                    )}
+                    {showAllTasks && (
+                      <div style={{ textAlign: "center", fontSize: 12, color: "#aaa", marginTop: 6, cursor: "pointer" }} onClick={() => setShowAllTasks(false)}>
+                        Show less ↑
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
             )}
 
+            {/* ── TASKS VIEW ── */}
             {view === "tasks" && (
               <div style={{ padding: "0 24px" }}>
                 <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4, marginBottom: 12 }}>
@@ -241,6 +386,138 @@
               </div>
             )}
 
+            {/* ── FOCUS VIEW ── */}
+            {view === "focus" && (
+              <div style={{ padding: "0 24px" }}>
+
+                {/* Mode selector */}
+                <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+                  {FOCUS_MODES.map(mode => (
+                    <button key={mode.id} onClick={() => setFocusMode(mode.id)}
+                      style={{ flex: 1, padding: "10px 4px", borderRadius: 12, fontSize: 12, fontWeight: 600, border: focusMode === mode.id ? "none" : "0.5px solid #D3D1C7", background: focusMode === mode.id ? mode.color : "#F5F4F0", color: focusMode === mode.id ? "#fff" : "#888780", cursor: "pointer", fontFamily: "inherit", transition: "all 0.2s" }}>
+                      <div style={{ fontSize: 18, marginBottom: 2 }}>{mode.icon}</div>
+                      {mode.label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Timer ring + countdown */}
+                <div style={{ display: "flex", justifyContent: "center", marginBottom: 24 }}>
+                  <div style={{ position: "relative", width: 220, height: 220, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <TimerRing progress={progressAngle} color={currentMode.color} />
+                    <div style={{ textAlign: "center", zIndex: 1 }}
+                      className={timerRunning ? "timer-running" : timerComplete ? "timer-complete" : ""}>
+                      <div style={{ fontSize: 11, color: "#888780", letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 4 }}>
+                        {timerPhase === "work" ? "Focus" : "Break"}
+                      </div>
+                      <div style={{ fontSize: 52, fontWeight: 700, letterSpacing: "-3px", lineHeight: 1, color: timerComplete ? currentMode.color : "#1a1a18" }}>
+                        {formatTime(secondsLeft)}
+                      </div>
+                      {timerComplete && (
+                        <div style={{ fontSize: 12, color: currentMode.color, marginTop: 6, fontWeight: 500 }}>
+                          {timerPhase === "work" ? "Session done! 🎉" : "Break over!"}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Timer controls */}
+                <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+                  {!timerRunning && !timerComplete && (
+                    <button onClick={startTimer} style={{ ...s.btn("primary"), flex: 2, background: currentMode.color }}>
+                      {secondsLeft === getCurrentDuration(focusMode, timerPhase) ? "Start" : "Resume"}
+                    </button>
+                  )}
+                  {timerRunning && (
+                    <button onClick={pauseTimer} style={{ ...s.btn("secondary"), flex: 2, background: "#F5F4F0" }}>Pause</button>
+                  )}
+                  {timerComplete && focusMode === "pomodoro" && timerPhase === "work" && (
+                    <button onClick={startBreak} style={{ ...s.btn("primary"), flex: 2, background: currentMode.color }}>Start break</button>
+                  )}
+                  {timerComplete && (timerPhase === "break" || focusMode !== "pomodoro") && (
+                    <button onClick={resetTimer} style={{ ...s.btn("primary"), flex: 2, background: currentMode.color }}>New session</button>
+                  )}
+                  <button onClick={resetTimer} style={{ ...s.btn("ghost"), flex: 1 }}>Reset</button>
+                </div>
+
+                {/* Link a task */}
+                <div style={s.card}>
+                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
+                    Link a task <span style={{ fontSize: 11, color: "#aaa", fontWeight: 400 }}>— optional</span>
+                  </div>
+                  {linkedTask ? (
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <div style={s.catDot(getCat(linkedTask.categoryId).color)} />
+                      <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>{linkedTask.title}</span>
+                      <span style={s.pointsBadge(getCat(linkedTask.categoryId).color)}>{linkedTask.points}pt</span>
+                      <button onClick={() => setLinkedTaskId(null)} style={{ background: "none", border: "none", color: "#ccc", cursor: "pointer", fontSize: 16 }}>×</button>
+                    </div>
+                  ) : (
+                    <select value="" onChange={e => setLinkedTaskId(Number(e.target.value))} style={{ ...s.select, marginBottom: 0 }}>
+                      <option value="">Select a task to focus on...</option>
+                      {tasks.filter(t => !t.done).map(t => (
+                        <option key={t.id} value={t.id}>{t.title} ({t.points}pt)</option>
+                      ))}
+                    </select>
+                  )}
+                  {linkedTask && timerComplete && timerPhase === "work" && (
+                    <div style={{ fontSize: 12, color: "#1D9E75", marginTop: 8 }}>
+                      ✓ Task marked complete — {linkedTask.points} points earned!
+                    </div>
+                  )}
+                </div>
+
+                {/* Timer settings */}
+                <button onClick={() => setShowTimerSettings(!showTimerSettings)}
+                  style={{ background: "none", border: "none", fontSize: 12, color: "#aaa", cursor: "pointer", padding: "4px 0", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 4 }}>
+                  ⚙ Customise durations {showTimerSettings ? "↑" : "↓"}
+                </button>
+
+                {showTimerSettings && (
+                  <div style={{ ...s.card, marginTop: 8 }}>
+                    {focusMode === "pomodoro" && (
+                      <>
+                        <div style={{ marginBottom: 14 }}>
+                          <div style={{ fontSize: 12, color: "#888780", marginBottom: 6 }}>Work duration: <strong>{pomodoroWork} min</strong></div>
+                          <input type="range" min={5} max={60} step={5} value={pomodoroWork}
+                            onChange={e => { setPomodoroWork(Number(e.target.value)); if (!timerRunning) setSecondsLeft(Number(e.target.value) * 60); }}
+                            style={{ width: "100%" }} />
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#ccc" }}><span>5m</span><span>60m</span></div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize: 12, color: "#888780", marginBottom: 6 }}>Break duration: <strong>{pomodoroBreak} min</strong></div>
+                          <input type="range" min={1} max={30} step={1} value={pomodoroBreak}
+                            onChange={e => setPomodoroBreak(Number(e.target.value))}
+                            style={{ width: "100%" }} />
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#ccc" }}><span>1m</span><span>30m</span></div>
+                        </div>
+                      </>
+                    )}
+                    {focusMode === "sprint" && (
+                      <div>
+                        <div style={{ fontSize: 12, color: "#888780", marginBottom: 6 }}>Sprint duration: <strong>{sprintWork} min</strong></div>
+                        <input type="range" min={5} max={30} step={5} value={sprintWork}
+                          onChange={e => { setSprintWork(Number(e.target.value)); if (!timerRunning) setSecondsLeft(Number(e.target.value) * 60); }}
+                          style={{ width: "100%" }} />
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#ccc" }}><span>5m</span><span>30m</span></div>
+                      </div>
+                    )}
+                    {focusMode === "deep" && (
+                      <div>
+                        <div style={{ fontSize: 12, color: "#888780", marginBottom: 6 }}>Deep work duration: <strong>{deepWork} min</strong></div>
+                        <input type="range" min={30} max={180} step={15} value={deepWork}
+                          onChange={e => { setDeepWork(Number(e.target.value)); if (!timerRunning) setSecondsLeft(Number(e.target.value) * 60); }}
+                          style={{ width: "100%" }} />
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#ccc" }}><span>30m</span><span>180m</span></div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── SETTINGS VIEW ── */}
             {view === "settings" && (
               <div style={{ padding: "0 24px" }}>
                 <div style={s.card}>
@@ -273,6 +550,7 @@
               </div>
             )}
 
+            {/* ── ADD TASK MODAL ── */}
             {showAddTask && (
               <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "flex-end", zIndex: 100 }} onClick={e => e.target === e.currentTarget && setShowAddTask(false)}>
                 <div style={{ background: "#fff", borderRadius: "20px 20px 0 0", padding: "24px 24px 40px", width: "100%", maxWidth: 480, margin: "0 auto" }}>
@@ -300,10 +578,17 @@
               </div>
             )}
 
+            {/* FAB */}
             <button style={s.fab} onClick={() => setShowAddTask(true)}>+</button>
 
+            {/* BOTTOM NAV — now 4 tabs */}
             <nav style={s.nav}>
-              {[{ id: "dashboard", label: "Today", icon: "◈" }, { id: "tasks", label: "Tasks", icon: "☰" }, { id: "settings", label: "Settings", icon: "⊙" }].map(tab => (
+              {[
+                { id: "dashboard", label: "Today", icon: "◈" },
+                { id: "tasks", label: "Tasks", icon: "☰" },
+                { id: "focus", label: "Focus", icon: "◎" },
+                { id: "settings", label: "Settings", icon: "⊙" },
+              ].map(tab => (
                 <button key={tab.id} style={s.navBtn(view === tab.id)} onClick={() => setView(tab.id)}>
                   <span style={{ fontSize: 18 }}>{tab.icon}</span>
                   {tab.label}
