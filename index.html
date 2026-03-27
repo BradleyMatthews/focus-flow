@@ -8,17 +8,23 @@
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <style>
-      @keyframes timerPulse {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.6; }
+      @keyframes timerPulse { 0%,100%{opacity:1} 50%{opacity:0.6} }
+      @keyframes completePop { 0%{transform:scale(1)} 50%{transform:scale(1.08)} 100%{transform:scale(1)} }
+      @keyframes taskComplete {
+        0%   { opacity:1; transform: scale(1) translateX(0); }
+        60%  { opacity:0.6; transform: scale(0.88) translateX(30px); }
+        100% { opacity:0; transform: scale(0.75) translateX(80px); }
       }
-      @keyframes completePop {
-        0% { transform: scale(1); }
-        50% { transform: scale(1.08); }
+      @keyframes tabPulse {
+        0%   { transform: scale(1); }
+        40%  { transform: scale(1.08); }
         100% { transform: scale(1); }
       }
       .timer-running { animation: timerPulse 2s ease-in-out infinite; }
       .timer-complete { animation: completePop 0.4s ease; }
+      .task-completing { animation: taskComplete 0.45s ease forwards; pointer-events: none; }
+      .tab-pulse { animation: tabPulse 0.35s ease; }
+      * { box-sizing: border-box; }
     </style>
   </head>
   <body style="margin:0;padding:0;background:#FAFAF8;">
@@ -27,17 +33,14 @@
       const { useState, useEffect, useRef, useCallback } = React;
 
       const DEFAULT_CATEGORIES = [
-        { id: "work", label: "Work 🚀", color: "#378ADD" },
-        { id: "health", label: "Health 💪", color: "#1D9E75" },
+        { id: "work",     label: "Work 🚀",     color: "#378ADD" },
+        { id: "health",   label: "Health 💪",   color: "#1D9E75" },
         { id: "personal", label: "Personal 🌱", color: "#D4537E" },
         { id: "learning", label: "Learning 🧠", color: "#BA7517" },
       ];
 
       const POINT_VALUES = [1, 2, 3, 5, 8];
 
-      // ─── FOCUS MODES ────────────────────────────────────────────────────────
-      // Each mode has default work/break times (in minutes) and a colour accent.
-      // The user can customise work/break on Pomodoro and duration on Sprint/Deep.
       const FOCUS_MODES = [
         { id: "pomodoro", label: "Pomodoro", icon: "🍅", color: "#D4537E", defaultWork: 25, defaultBreak: 5 },
         { id: "sprint",   label: "Sprint",   icon: "⚡", color: "#BA7517", defaultWork: 15, defaultBreak: 0 },
@@ -50,8 +53,95 @@
         return `${m}:${s}`;
       }
 
+      function Ring({ pct, color, size = 36, strokeWidth = 3, children }) {
+        const r = (size - strokeWidth * 2) / 2;
+        const circ = 2 * Math.PI * r;
+        const dash = (pct / 100) * circ;
+        return (
+          <div style={{ position: "relative", width: size, height: size, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <svg width={size} height={size} style={{ position: "absolute", top: 0, left: 0, transform: "rotate(-90deg)" }}>
+              <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="#EEEDE8" strokeWidth={strokeWidth} />
+              <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth={strokeWidth}
+                strokeDasharray={`${dash} ${circ}`} strokeLinecap="round" style={{ transition: "stroke-dasharray 0.5s ease" }} />
+            </svg>
+            <div style={{ zIndex: 1 }}>{children}</div>
+          </div>
+        );
+      }
+
+      function TimerRing({ progress, color, size = 220 }) {
+        const r = (size / 2) - 12;
+        const cx = size / 2; const cy = size / 2;
+        const angle = (progress / 360) * 2 * Math.PI - Math.PI / 2;
+        const x = cx + r * Math.cos(angle); const y = cy + r * Math.sin(angle);
+        const largeArc = progress > 180 ? 1 : 0;
+        return (
+          <svg width={size} height={size} style={{ position: "absolute", top: 0, left: 0 }}>
+            <circle cx={cx} cy={cy} r={r} fill="none" stroke="#EEEDE8" strokeWidth="4" />
+            {progress > 0 && <path d={`M ${cx} ${cy-r} A ${r} ${r} 0 ${largeArc} 1 ${x} ${y}`} fill="none" stroke={color} strokeWidth="4" strokeLinecap="round" />}
+          </svg>
+        );
+      }
+
+      // ── TOUCH DRAG HOOK ───────────────────────────────────────────────────
+      // This replaces HTML5 drag events with pointer events, which work on
+      // both desktop (mouse) and mobile (touch). The hook returns handlers
+      // to attach to each draggable item and a drop zone indicator.
+      function useTouchDrag(items, setItems) {
+        const [dragIndex, setDragIndex] = useState(null);
+        const [dragOver, setDragOver] = useState(null);
+        const dragY = useRef(0);
+        const itemRefs = useRef([]);
+
+        function onPointerDown(e, index) {
+          e.currentTarget.setPointerCapture(e.pointerId);
+          setDragIndex(index);
+          dragY.current = e.clientY;
+        }
+
+        function onPointerMove(e, index) {
+          if (dragIndex === null) return;
+          const delta = e.clientY - dragY.current;
+          // Find which slot we're hovering over by checking element positions
+          const els = itemRefs.current.filter(Boolean);
+          let closest = dragIndex;
+          let closestDist = Infinity;
+          els.forEach((el, i) => {
+            if (!el) return;
+            const rect = el.getBoundingClientRect();
+            const mid = rect.top + rect.height / 2;
+            const dist = Math.abs(e.clientY - mid);
+            if (dist < closestDist) { closestDist = dist; closest = i; }
+          });
+          setDragOver(closest);
+        }
+
+        function onPointerUp(e) {
+          if (dragIndex !== null && dragOver !== null && dragIndex !== dragOver) {
+            setItems(prev => {
+              const arr = [...prev];
+              const [moved] = arr.splice(dragIndex, 1);
+              arr.splice(dragOver, 0, moved);
+              return arr;
+            });
+          }
+          setDragIndex(null);
+          setDragOver(null);
+        }
+
+        function getDragHandlers(index) {
+          return {
+            onPointerDown: e => onPointerDown(e, index),
+            onPointerMove: e => onPointerMove(e, index),
+            onPointerUp,
+            onPointerCancel: onPointerUp,
+          };
+        }
+
+        return { dragIndex, dragOver, getDragHandlers, itemRefs };
+      }
+
       function ProductivityApp() {
-        // ── CORE STATE ──────────────────────────────────────────────────────
         const [tasks, setTasks] = useState([]);
         const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
         const [view, setView] = useState("dashboard");
@@ -69,15 +159,22 @@
         const [showAllTasks, setShowAllTasks] = useState(false);
         const animRef = useRef(null);
 
-        // ── FOCUS TIMER STATE ───────────────────────────────────────────────
+        // Dashboard tab state — "pending" | "completed"
+        const [dashTab, setDashTab] = useState("pending");
+        // Track which task ids are mid-animation (completing)
+        const [completingIds, setCompletingIds] = useState([]);
+        // Pulse the completed tab when a task finishes
+        const [completedTabPulse, setCompletedTabPulse] = useState(false);
+        const completedTabRef = useRef(null);
+
+        // Focus state
         const [focusMode, setFocusMode] = useState("pomodoro");
-        const [timerPhase, setTimerPhase] = useState("work"); // "work" | "break"
+        const [timerPhase, setTimerPhase] = useState("work");
         const [timerRunning, setTimerRunning] = useState(false);
         const [timerComplete, setTimerComplete] = useState(false);
         const [secondsLeft, setSecondsLeft] = useState(25 * 60);
-        const [linkedTaskId, setLinkedTaskId] = useState(null);
+        const [linkedTaskIds, setLinkedTaskIds] = useState([]);
         const [sessionCount, setSessionCount] = useState(0);
-        // Customisable durations per mode
         const [pomodoroWork, setPomodoroWork] = useState(25);
         const [pomodoroBreak, setPomodoroBreak] = useState(5);
         const [sprintWork, setSprintWork] = useState(15);
@@ -85,7 +182,33 @@
         const [showTimerSettings, setShowTimerSettings] = useState(false);
         const timerRef = useRef(null);
 
-        // ── DERIVED VALUES ──────────────────────────────────────────────────
+        // Touch drag for tasks tab
+        const pendingForDrag = tasks.filter(t => !t.done);
+        const { dragIndex: tasksDragIdx, dragOver: tasksDragOver, getDragHandlers: getTasksDragHandlers, itemRefs: tasksItemRefs } = useTouchDrag(
+          pendingForDrag,
+          (reordered) => {
+            setTasks(prev => {
+              const done = prev.filter(t => t.done);
+              return [...reordered, ...done];
+            });
+          }
+        );
+
+        // Touch drag for dashboard pending tasks
+        const dashPendingAll = (dashFilterCat === "all" ? tasks : tasks.filter(t => t.categoryId === dashFilterCat)).filter(t => !t.done);
+        const { dragIndex: dashDragIdx, dragOver: dashDragOver, getDragHandlers: getDashDragHandlers, itemRefs: dashItemRefs } = useTouchDrag(
+          dashPendingAll,
+          (reordered) => {
+            setTasks(prev => {
+              const done = prev.filter(t => t.done);
+              const otherPending = prev.filter(t => !t.done && (dashFilterCat !== "all" ? t.categoryId !== dashFilterCat : false));
+              return dashFilterCat === "all"
+                ? [...reordered, ...done]
+                : [...otherPending, ...reordered, ...done];
+            });
+          }
+        );
+
         useEffect(() => {
           const pts = tasks.filter(t => t.done).reduce((sum, t) => sum + t.points, 0);
           setTotalPoints(pts);
@@ -94,115 +217,98 @@
         const completedToday = tasks.filter(t => t.done).length;
         const totalTasks = tasks.length;
         const progressPct = dailyGoal > 0 ? Math.min(100, Math.round((totalPoints / dailyGoal) * 100)) : 0;
+
         const pendingTasks = (filterCat === "all" ? tasks : tasks.filter(t => t.categoryId === filterCat)).filter(t => !t.done);
         const doneTasks = (filterCat === "all" ? tasks : tasks.filter(t => t.categoryId === filterCat)).filter(t => t.done);
         const filteredTasks = filterCat === "all" ? tasks : tasks.filter(t => t.categoryId === filterCat);
-        const dashPending = (dashFilterCat === "all" ? tasks : tasks.filter(t => t.categoryId === dashFilterCat)).filter(t => !t.done);
-        const dashTasksToShow = showAllTasks ? dashPending : dashPending.slice(0, 10);
+        const dashPending = dashPendingAll.slice(0, showAllTasks ? undefined : 10);
+        const dashDone = (dashFilterCat === "all" ? tasks : tasks.filter(t => t.categoryId === dashFilterCat)).filter(t => t.done);
 
-        // ── TIMER LOGIC ─────────────────────────────────────────────────────
-        // useCallback memoises this function so it doesn't get recreated every render
         const getCurrentDuration = useCallback((mode, phase) => {
           if (mode === "pomodoro") return (phase === "work" ? pomodoroWork : pomodoroBreak) * 60;
           if (mode === "sprint") return sprintWork * 60;
           return deepWork * 60;
         }, [pomodoroWork, pomodoroBreak, sprintWork, deepWork]);
 
-        // Reset timer when mode changes
         useEffect(() => {
-          setTimerRunning(false);
-          setTimerPhase("work");
-          setTimerComplete(false);
-          setSecondsLeft(getCurrentDuration(focusMode, "work"));
-          clearInterval(timerRef.current);
+          setTimerRunning(false); setTimerPhase("work"); setTimerComplete(false);
+          setSecondsLeft(getCurrentDuration(focusMode, "work")); clearInterval(timerRef.current);
         }, [focusMode]);
 
-        // The countdown tick
         useEffect(() => {
           if (!timerRunning) return;
           timerRef.current = setInterval(() => {
             setSecondsLeft(prev => {
-              if (prev <= 1) {
-                clearInterval(timerRef.current);
-                setTimerRunning(false);
-                setTimerComplete(true);
-                setSessionCount(c => c + 1);
-                // Auto-complete linked task if it's a work phase
-                if (timerPhase === "work" && linkedTaskId) {
-                  setTasks(ts => ts.map(t => {
-                    if (t.id !== linkedTaskId || t.done) return t;
-                    setPointsAnimation(true);
-                    clearTimeout(animRef.current);
-                    animRef.current = setTimeout(() => setPointsAnimation(false), 800);
-                    return { ...t, done: true };
-                  }));
-                }
-                return 0;
-              }
+              if (prev <= 1) { clearInterval(timerRef.current); setTimerRunning(false); setTimerComplete(true); setSessionCount(c => c + 1); return 0; }
               return prev - 1;
             });
           }, 1000);
           return () => clearInterval(timerRef.current);
-        }, [timerRunning, timerPhase, linkedTaskId]);
+        }, [timerRunning]);
 
         function startTimer() { setTimerRunning(true); setTimerComplete(false); }
         function pauseTimer() { setTimerRunning(false); clearInterval(timerRef.current); }
-
-        function resetTimer() {
-          setTimerRunning(false);
-          setTimerComplete(false);
-          clearInterval(timerRef.current);
-          setTimerPhase("work");
-          setSecondsLeft(getCurrentDuration(focusMode, "work"));
-        }
-
-        function startBreak() {
-          setTimerPhase("break");
-          setTimerComplete(false);
-          setSecondsLeft(getCurrentDuration(focusMode, "break"));
-          setTimerRunning(true);
+        function resetTimer() { setTimerRunning(false); setTimerComplete(false); clearInterval(timerRef.current); setTimerPhase("work"); setSecondsLeft(getCurrentDuration(focusMode, "work")); }
+        function startBreak() { setTimerPhase("break"); setTimerComplete(false); setSecondsLeft(getCurrentDuration(focusMode, "break")); setTimerRunning(true); }
+        function toggleLinkedTask(id) { setLinkedTaskIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]); }
+        function completeLinkedTasks() {
+          linkedTaskIds.forEach(id => {
+            const t = tasks.find(x => x.id === id);
+            if (t && !t.done) animateTaskComplete(id);
+          });
         }
 
         const currentMode = FOCUS_MODES.find(m => m.id === focusMode);
         const totalDuration = getCurrentDuration(focusMode, timerPhase);
         const progressAngle = ((totalDuration - secondsLeft) / totalDuration) * 360;
-        const linkedTask = tasks.find(t => t.id === linkedTaskId);
+        const linkedTasks = tasks.filter(t => linkedTaskIds.includes(t.id));
+        const linkedPendingCount = linkedTasks.filter(t => !t.done).length;
 
-        // ── TASK FUNCTIONS ──────────────────────────────────────────────────
+        // ── ANIMATED TASK COMPLETION ──────────────────────────────────────
+        // When a task is ticked, we add it to completingIds (triggering CSS
+        // animation), wait for the animation to finish, then mark it done
+        // in state and pulse the Completed tab.
+        function animateTaskComplete(id) {
+          setCompletingIds(prev => [...prev, id]);
+          setPointsAnimation(true);
+          clearTimeout(animRef.current);
+          animRef.current = setTimeout(() => setPointsAnimation(false), 800);
+          setTimeout(() => {
+            setTasks(prev => prev.map(t => t.id === id ? { ...t, done: true } : t));
+            setCompletingIds(prev => prev.filter(x => x !== id));
+            // Pulse the completed tab
+            setCompletedTabPulse(true);
+            setTimeout(() => setCompletedTabPulse(false), 400);
+          }, 440);
+        }
+
+        function toggleTask(id) {
+          const task = tasks.find(t => t.id === id);
+          if (!task) return;
+          if (!task.done) {
+            animateTaskComplete(id);
+          } else {
+            setTasks(prev => prev.map(t => t.id === id ? { ...t, done: false } : t));
+          }
+        }
+
         function addTask() {
           if (!newTask.title.trim()) return;
-          setTasks(prev => [...prev, {
-            id: Date.now(), title: newTask.title.trim(), categoryId: newTask.categoryId,
-            points: newTask.points, note: newTask.note, done: false, createdAt: new Date().toISOString(),
-          }]);
+          setTasks(prev => [...prev, { id: Date.now(), title: newTask.title.trim(), categoryId: newTask.categoryId, points: newTask.points, note: newTask.note, done: false, createdAt: new Date().toISOString() }]);
           setNewTask({ title: "", categoryId: "work", points: 3, note: "" });
           setShowAddTask(false);
         }
 
-        function toggleTask(id) {
-          setTasks(prev => prev.map(t => {
-            if (t.id !== id) return t;
-            if (!t.done) {
-              setPointsAnimation(true);
-              clearTimeout(animRef.current);
-              animRef.current = setTimeout(() => setPointsAnimation(false), 800);
-            }
-            return { ...t, done: !t.done };
-          }));
-        }
-
         function deleteTask(id) { setTasks(prev => prev.filter(t => t.id !== id)); }
         function getCat(id) { return categories.find(c => c.id === id) || categories[0]; }
-
         function addCategory() {
           if (!newCatLabel.trim()) return;
           setCategories(prev => [...prev, { id: Date.now().toString(), label: newCatLabel.trim(), color: newCatColor }]);
           setNewCatLabel(""); setNewCatColor("#378ADD");
         }
 
-        // ── STYLES ──────────────────────────────────────────────────────────
         const s = {
-          app: { fontFamily: "'DM Sans', 'Helvetica Neue', sans-serif", minHeight: "100vh", background: "#FAFAF8", color: "#1a1a18", maxWidth: 480, margin: "0 auto", paddingBottom: 80 },
+          app: { fontFamily: "'DM Sans','Helvetica Neue',sans-serif", minHeight: "100vh", background: "#FAFAF8", color: "#1a1a18", maxWidth: 480, margin: "0 auto", paddingBottom: 80 },
           header: { padding: "28px 24px 0" },
           greeting: { fontSize: 22, fontWeight: 600, letterSpacing: "-0.4px", marginBottom: 2 },
           sub: { fontSize: 13, color: "#888780", marginBottom: 24 },
@@ -212,63 +318,90 @@
           metricLabel: { fontSize: 11, color: "#888780", letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 4 },
           metricValue: { fontSize: 26, fontWeight: 600, letterSpacing: "-0.5px" },
           progressBar: { height: 6, background: "#EEEDE8", borderRadius: 99, overflow: "hidden", margin: "12px 0 4px" },
-          progressFill: (pct, color = "#1D9E75") => ({ height: "100%", width: `${pct}%`, background: color, borderRadius: 99, transition: "width 0.5s ease" }),
+          progressFill: (pct, color="#1D9E75") => ({ height: "100%", width: `${pct}%`, background: color, borderRadius: 99, transition: "width 0.5s ease" }),
           sectionTitle: { fontSize: 11, fontWeight: 600, letterSpacing: "0.8px", textTransform: "uppercase", color: "#888780", margin: "20px 0 8px" },
-          taskItem: (done) => ({ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", background: done ? "#F9F9F7" : "#fff", borderRadius: 12, border: "0.5px solid #E5E3DC", marginBottom: 6, opacity: done ? 0.65 : 1, transition: "opacity 0.2s" }),
+          taskItem: (done, isDragging, isOver) => ({
+            display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", marginBottom: 6, borderRadius: 12,
+            background: isOver ? "#F0F7FF" : done ? "#F9F9F7" : "#fff",
+            border: isOver ? "1.5px dashed #378ADD" : "0.5px solid #E5E3DC",
+            opacity: isDragging ? 0.4 : done ? 0.65 : 1,
+            transition: "opacity 0.2s, border 0.15s, background 0.15s",
+            userSelect: "none",
+          }),
           catDot: (color) => ({ width: 9, height: 9, borderRadius: "50%", background: color, flexShrink: 0 }),
-          taskTitle: (done) => ({ flex: 1, fontSize: 14, fontWeight: 500, textDecoration: done ? "line-through" : "none", color: done ? "#aaa" : "#1a1a18" }),
-          pointsBadge: (color) => ({ fontSize: 11, fontWeight: 600, color: color, background: color + "18", borderRadius: 6, padding: "2px 8px" }),
+          taskTitle: (done) => ({ flex: 1, fontSize: 14, fontWeight: 500, textDecoration: done ? "line-through" : "none", color: done ? "#aaa" : "#1a1a18", minWidth: 0 }),
+          pointsBadge: (color) => ({ fontSize: 11, fontWeight: 600, color: color, background: color + "18", borderRadius: 6, padding: "2px 8px", flexShrink: 0 }),
           checkbox: (done, color) => ({ width: 20, height: 20, borderRadius: 6, border: done ? "none" : `1.5px solid ${color}`, background: done ? color : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.15s" }),
           nav: { position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, background: "rgba(250,250,248,0.92)", backdropFilter: "blur(12px)", borderTop: "0.5px solid #E5E3DC", display: "flex", justifyContent: "space-around", padding: "10px 0 18px" },
-          navBtn: (active) => ({ display: "flex", flexDirection: "column", alignItems: "center", gap: 3, fontSize: 10, fontWeight: active ? 600 : 400, color: active ? "#1a1a18" : "#aaa", cursor: "pointer", background: "none", border: "none", padding: "4px 16px", letterSpacing: "0.3px" }),
-          fab: { position: "fixed", bottom: 72, right: "calc(50% - 220px)", width: 48, height: 48, borderRadius: "50%", background: "#1a1a18", color: "#fff", fontSize: 24, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 16px rgba(0,0,0,0.18)", transition: "transform 0.15s" },
-          input: { width: "100%", fontSize: 14, padding: "10px 12px", borderRadius: 10, border: "0.5px solid #D3D1C7", background: "#FAFAF8", color: "#1a1a18", outline: "none", boxSizing: "border-box", marginBottom: 8, fontFamily: "inherit" },
-          select: { width: "100%", fontSize: 14, padding: "10px 12px", borderRadius: 10, border: "0.5px solid #D3D1C7", background: "#FAFAF8", color: "#1a1a18", outline: "none", boxSizing: "border-box", marginBottom: 8, fontFamily: "inherit", appearance: "none" },
-          btn: (variant = "primary") => ({ padding: "10px 18px", borderRadius: 10, border: variant === "ghost" ? "0.5px solid #D3D1C7" : "none", background: variant === "primary" ? "#1a1a18" : variant === "ghost" ? "transparent" : "#F5F4F0", color: variant === "primary" ? "#fff" : "#1a1a18", fontSize: 14, fontWeight: 500, cursor: "pointer", fontFamily: "inherit" }),
+          navBtn: (active) => ({ display: "flex", flexDirection: "column", alignItems: "center", gap: 3, fontSize: 10, fontWeight: active ? 600 : 400, color: active ? "#1a1a18" : "#aaa", cursor: "pointer", background: "none", border: "none", padding: "4px 14px", letterSpacing: "0.3px" }),
+          fab: { position: "fixed", bottom: 72, right: "calc(50% - 220px)", width: 48, height: 48, borderRadius: "50%", background: "#1a1a18", color: "#fff", fontSize: 24, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 16px rgba(0,0,0,0.18)" },
+          input: { width: "100%", fontSize: 14, padding: "10px 12px", borderRadius: 10, border: "0.5px solid #D3D1C7", background: "#FAFAF8", color: "#1a1a18", outline: "none", marginBottom: 8, fontFamily: "inherit" },
+          select: { width: "100%", fontSize: 14, padding: "10px 12px", borderRadius: 10, border: "0.5px solid #D3D1C7", background: "#FAFAF8", color: "#1a1a18", outline: "none", marginBottom: 8, fontFamily: "inherit", appearance: "none" },
+          btn: (variant="primary", color) => ({ padding: "10px 18px", borderRadius: 10, border: variant === "ghost" ? "0.5px solid #D3D1C7" : "none", background: variant === "primary" ? (color || "#1a1a18") : variant === "ghost" ? "transparent" : "#F5F4F0", color: variant === "primary" ? "#fff" : "#1a1a18", fontSize: 14, fontWeight: 500, cursor: "pointer", fontFamily: "inherit" }),
         };
 
-        // ── SVG RING HELPER ─────────────────────────────────────────────────
-        // Draws a circular progress ring around the timer countdown.
-        // We convert the progress angle to SVG arc coordinates using trigonometry.
-        function TimerRing({ progress, color, size = 220 }) {
-          const r = (size / 2) - 12;
-          const cx = size / 2;
-          const cy = size / 2;
-          const angle = (progress / 360) * 2 * Math.PI - Math.PI / 2;
-          const x = cx + r * Math.cos(angle);
-          const y = cy + r * Math.sin(angle);
-          const largeArc = progress > 180 ? 1 : 0;
-          const circumference = 2 * Math.PI * r;
+        // ── DRAGGABLE TASK ROW ────────────────────────────────────────────
+        function DraggableTaskRow({ task, index, dragIdx, dragOverIdx, dragHandlers, itemRef, onToggle, onDelete }) {
+          const cat = getCat(task.categoryId);
+          const isDragging = dragIdx === index;
+          const isOver = dragOverIdx === index && dragIdx !== index;
+          const isCompleting = completingIds.includes(task.id);
           return (
-            <svg width={size} height={size} style={{ position: "absolute", top: 0, left: 0 }}>
-              <circle cx={cx} cy={cy} r={r} fill="none" stroke="#EEEDE8" strokeWidth="4" />
-              {progress > 0 && (
-                <path
-                  d={`M ${cx} ${cy - r} A ${r} ${r} 0 ${largeArc} 1 ${x} ${y}`}
-                  fill="none" stroke={color} strokeWidth="4" strokeLinecap="round"
-                />
-              )}
-            </svg>
+            <div
+              ref={el => { if (itemRef) itemRef.current[index] = el; }}
+              className={isCompleting ? "task-completing" : ""}
+              style={s.taskItem(task.done, isDragging, isOver)}
+            >
+              {/* Drag handle — only the handle initiates drag */}
+              <div
+                {...dragHandlers(index)}
+                style={{ color: "#ccc", fontSize: 14, flexShrink: 0, padding: "0 4px 0 0", touchAction: "none", cursor: "grab", userSelect: "none" }}
+              >⠿</div>
+              <div style={s.checkbox(task.done, cat.color)} onClick={() => onToggle(task.id)}>
+                {task.done && <svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 4L3.5 6.5L9 1" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+              </div>
+              <div style={s.catDot(cat.color)} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={s.taskTitle(task.done)}>{task.title}</div>
+                {task.note && <div style={{ fontSize: 11, color: "#aaa", marginTop: 2 }}>{task.note}</div>}
+              </div>
+              <span style={s.pointsBadge(cat.color)}>{task.points}pt</span>
+              <button onClick={() => onDelete(task.id)} style={{ background: "none", border: "none", color: "#ccc", cursor: "pointer", fontSize: 16, padding: "0 0 0 4px", flexShrink: 0 }}>×</button>
+            </div>
           );
         }
 
-        // ── RENDER ───────────────────────────────────────────────────────────
+        // ── STATIC TASK ROW (done tasks, no drag) ────────────────────────
+        function StaticTaskRow({ task, onToggle }) {
+          const cat = getCat(task.categoryId);
+          return (
+            <div style={s.taskItem(true, false, false)}>
+              <div style={s.checkbox(true, cat.color)} onClick={() => onToggle(task.id)}>
+                <svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 4L3.5 6.5L9 1" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              </div>
+              <div style={s.catDot(cat.color)} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={s.taskTitle(true)}>{task.title}</div>
+                {task.note && <div style={{ fontSize: 11, color: "#aaa", marginTop: 2 }}>{task.note}</div>}
+              </div>
+              <span style={s.pointsBadge(cat.color)}>{task.points}pt</span>
+            </div>
+          );
+        }
+
         return (
           <div style={s.app}>
-            {/* HEADER */}
             <div style={s.header}>
-              <div style={s.greeting}>
-                {view === "dashboard" ? "Today" : view === "tasks" ? "Tasks" : view === "focus" ? "Focus" : "Settings"}
-              </div>
+              <div style={s.greeting}>{view === "dashboard" ? "Today" : view === "tasks" ? "Tasks" : view === "focus" ? "Focus" : "Settings"}</div>
               <div style={s.sub}>
                 {view === "dashboard" ? `${completedToday} of ${totalTasks} tasks done · ${streak} day streak 🔥`
-                  : view === "tasks" ? `${tasks.filter(t => !t.done).length} pending · ${tasks.filter(t => t.done).length} done`
+                  : view === "tasks" ? `${tasks.filter(t=>!t.done).length} pending · ${tasks.filter(t=>t.done).length} done`
                   : view === "focus" ? `${sessionCount} session${sessionCount !== 1 ? "s" : ""} completed today`
                   : "Manage categories & goals"}
               </div>
             </div>
 
-            {/* ── DASHBOARD VIEW ── */}
+            {/* ── DASHBOARD ── */}
             {view === "dashboard" && (
               <div style={{ padding: "0 24px" }}>
                 <div style={{ ...s.card, position: "relative", overflow: "hidden" }}>
@@ -281,29 +414,42 @@
                     {progressPct >= 100 ? "🎉 Daily goal reached!" : `${dailyGoal - totalPoints} pts to hit your goal`}
                   </div>
                 </div>
+
                 <div style={s.metricRow}>
                   <div style={s.metricCard}><div style={s.metricLabel}>Completed</div><div style={s.metricValue}>{completedToday}</div></div>
                   <div style={s.metricCard}><div style={s.metricLabel}>Remaining</div><div style={s.metricValue}>{totalTasks - completedToday}</div></div>
                 </div>
+
                 {categories.map(cat => {
                   const catTasks = tasks.filter(t => t.categoryId === cat.id);
                   const catDone = catTasks.filter(t => t.done).length;
-                  const catPts = catTasks.filter(t => t.done).reduce((sum, t) => sum + t.points, 0);
+                  const catEarned = catTasks.filter(t => t.done).reduce((sum, t) => sum + t.points, 0);
+                  const catTotal = catTasks.reduce((sum, t) => sum + t.points, 0);
                   if (catTasks.length === 0) return null;
                   const pct = Math.round((catDone / catTasks.length) * 100);
                   return (
                     <div key={cat.id} style={{ ...s.card, padding: "12px 16px" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <div style={s.catDot(cat.color)} />
-                          <span style={{ fontSize: 13, fontWeight: 500 }}>{cat.label}</span>
+                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                        <Ring pct={pct} color={cat.color} size={44} strokeWidth={3}>
+                          <span style={{ fontSize: 10, fontWeight: 600, color: cat.color }}>{pct}%</span>
+                        </Ring>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>{cat.label}</div>
+                          <div style={{ fontSize: 12, color: "#888780" }}>
+                            <span style={{ color: cat.color, fontWeight: 600 }}>{catEarned}pt</span>
+                            <span> / {catTotal}pt</span>
+                          </div>
                         </div>
-                        <span style={{ fontSize: 12, color: "#888780" }}>{catDone}/{catTasks.length} · {catPts}pts</span>
+                        <div style={{ textAlign: "center", background: cat.color + "12", borderRadius: 10, padding: "6px 12px" }}>
+                          <div style={{ fontSize: 16, fontWeight: 700, color: cat.color, letterSpacing: "-0.5px" }}>{catDone}/{catTasks.length}</div>
+                          <div style={{ fontSize: 10, color: cat.color + "99" }}>tasks</div>
+                        </div>
                       </div>
-                      <div style={s.progressBar}><div style={s.progressFill(pct, cat.color)} /></div>
                     </div>
                   );
                 })}
+
+                {/* Category filter pills */}
                 <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4, marginBottom: 12 }}>
                   {[{ id: "all", label: "All", color: "#888780" }, ...categories].map(cat => (
                     <button key={cat.id} onClick={() => { setDashFilterCat(cat.id); setShowAllTasks(false); }}
@@ -312,85 +458,161 @@
                     </button>
                   ))}
                 </div>
+
                 {tasks.length === 0 && <div style={{ textAlign: "center", padding: "40px 0", color: "#aaa", fontSize: 14 }}>No tasks yet. Tap + to add your first one.</div>}
-                {dashPending.length > 0 && (
+
+                {/* ── BROWSER-STYLE TABS ── */}
+                {tasks.length > 0 && (
                   <>
-                    <div style={s.sectionTitle}>Up next</div>
-                    {dashTasksToShow.map(task => {
-                      const cat = getCat(task.categoryId);
-                      return (
-                        <div key={task.id} style={s.taskItem(false)}>
-                          <div style={s.checkbox(false, cat.color)} onClick={() => toggleTask(task.id)} />
-                          <div style={s.catDot(cat.color)} />
-                          <span style={s.taskTitle(false)}>{task.title}</span>
-                          <span style={s.pointsBadge(cat.color)}>{task.points}pt</span>
-                        </div>
-                      );
-                    })}
-                    {!showAllTasks && dashPending.length > 10 && (
-                      <div style={{ textAlign: "center", fontSize: 12, color: "#aaa", marginTop: 6, cursor: "pointer" }} onClick={() => setShowAllTasks(true)}>
-                        + {dashPending.length - 10} more tasks — tap to expand
-                      </div>
-                    )}
-                    {showAllTasks && (
-                      <div style={{ textAlign: "center", fontSize: 12, color: "#aaa", marginTop: 6, cursor: "pointer" }} onClick={() => setShowAllTasks(false)}>
-                        Show less ↑
-                      </div>
-                    )}
+                    <div style={{ display: "flex", gap: 0, marginBottom: 0, borderBottom: "0.5px solid #E5E3DC" }}>
+                      {/* Up next tab */}
+                      <button
+                        onClick={() => setDashTab("pending")}
+                        style={{
+                          flex: 1, padding: "10px 0", fontSize: 12, fontWeight: dashTab === "pending" ? 600 : 400,
+                          color: dashTab === "pending" ? "#1a1a18" : "#aaa",
+                          background: dashTab === "pending" ? "#fff" : "#F5F4F0",
+                          border: "0.5px solid #E5E3DC",
+                          borderBottom: dashTab === "pending" ? "none" : "0.5px solid #E5E3DC",
+                          borderRadius: "10px 10px 0 0",
+                          cursor: "pointer", fontFamily: "inherit",
+                          marginBottom: dashTab === "pending" ? "-0.5px" : 0,
+                          letterSpacing: "0.4px",
+                          transition: "all 0.2s",
+                        }}>
+                        UP NEXT
+                        {dashPendingAll.length > 0 && (
+                          <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, background: "#1a1a18", color: "#fff", borderRadius: 99, padding: "1px 6px" }}>
+                            {dashPendingAll.length}
+                          </span>
+                        )}
+                      </button>
+
+                      {/* Completed tab */}
+                      <button
+                        ref={completedTabRef}
+                        onClick={() => setDashTab("completed")}
+                        className={completedTabPulse ? "tab-pulse" : ""}
+                        style={{
+                          flex: 1, padding: "10px 0", fontSize: 12, fontWeight: dashTab === "completed" ? 600 : 400,
+                          color: dashTab === "completed" ? "#1a1a18" : "#aaa",
+                          background: dashTab === "completed" ? "#fff" : "#F5F4F0",
+                          border: "0.5px solid #E5E3DC",
+                          borderBottom: dashTab === "completed" ? "none" : "0.5px solid #E5E3DC",
+                          borderRadius: "10px 10px 0 0",
+                          cursor: "pointer", fontFamily: "inherit",
+                          marginBottom: dashTab === "completed" ? "-0.5px" : 0,
+                          letterSpacing: "0.4px",
+                          transition: "all 0.2s",
+                        }}>
+                        COMPLETED
+                        {dashDone.length > 0 && (
+                          <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, background: "#1D9E75", color: "#fff", borderRadius: 99, padding: "1px 6px" }}>
+                            {dashDone.length}
+                          </span>
+                        )}
+                      </button>
+                    </div>
+
+                    {/* Tab content */}
+                    <div style={{ background: "#fff", border: "0.5px solid #E5E3DC", borderTop: "none", borderRadius: "0 0 12px 12px", padding: "12px", marginBottom: 16 }}>
+
+                      {/* UP NEXT panel */}
+                      {dashTab === "pending" && (
+                        <>
+                          {dashPendingAll.length === 0 && (
+                            <div style={{ textAlign: "center", padding: "24px 0", color: "#aaa", fontSize: 13 }}>All tasks complete! 🎉</div>
+                          )}
+                          {dashPendingAll.map((task, index) => (
+                            <DraggableTaskRow
+                              key={task.id}
+                              task={task}
+                              index={index}
+                              dragIdx={dashDragIdx}
+                              dragOverIdx={dashDragOver}
+                              dragHandlers={getDashDragHandlers}
+                              itemRef={dashItemRefs}
+                              onToggle={toggleTask}
+                              onDelete={deleteTask}
+                            />
+                          ))}
+                          {!showAllTasks && dashPendingAll.length > 10 && (
+                            <div style={{ textAlign: "center", fontSize: 12, color: "#aaa", marginTop: 6, cursor: "pointer" }} onClick={() => setShowAllTasks(true)}>
+                              + {dashPendingAll.length - 10} more — tap to expand
+                            </div>
+                          )}
+                          {showAllTasks && dashPendingAll.length > 10 && (
+                            <div style={{ textAlign: "center", fontSize: 12, color: "#aaa", marginTop: 6, cursor: "pointer" }} onClick={() => setShowAllTasks(false)}>
+                              Show less ↑
+                            </div>
+                          )}
+                        </>
+                      )}
+
+                      {/* COMPLETED panel */}
+                      {dashTab === "completed" && (
+                        <>
+                          {dashDone.length === 0 && (
+                            <div style={{ textAlign: "center", padding: "24px 0", color: "#aaa", fontSize: 13 }}>No tasks completed yet today.</div>
+                          )}
+                          {dashDone.map(task => (
+                            <StaticTaskRow key={task.id} task={task} onToggle={toggleTask} />
+                          ))}
+                        </>
+                      )}
+                    </div>
                   </>
                 )}
               </div>
             )}
 
-            {/* ── TASKS VIEW ── */}
+            {/* ── TASKS ── */}
             {view === "tasks" && (
               <div style={{ padding: "0 24px" }}>
                 <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4, marginBottom: 12 }}>
                   {[{ id: "all", label: "All", color: "#888780" }, ...categories].map(cat => (
-                    <button key={cat.id} onClick={() => setFilterCat(cat.id)} style={{ flexShrink: 0, padding: "5px 14px", borderRadius: 99, fontSize: 12, fontWeight: 500, border: filterCat === cat.id ? "none" : "0.5px solid #D3D1C7", background: filterCat === cat.id ? cat.color : "transparent", color: filterCat === cat.id ? "#fff" : "#666", cursor: "pointer", fontFamily: "inherit" }}>
+                    <button key={cat.id} onClick={() => setFilterCat(cat.id)}
+                      style={{ flexShrink: 0, padding: "5px 14px", borderRadius: 99, fontSize: 12, fontWeight: 500, border: filterCat === cat.id ? "none" : "0.5px solid #D3D1C7", background: filterCat === cat.id ? cat.color : "transparent", color: filterCat === cat.id ? "#fff" : "#666", cursor: "pointer", fontFamily: "inherit" }}>
                       {cat.label}
                     </button>
                   ))}
                 </div>
-                {pendingTasks.length > 0 && <div style={s.sectionTitle}>Pending</div>}
-                {pendingTasks.map(task => {
-                  const cat = getCat(task.categoryId);
-                  return (
-                    <div key={task.id} style={s.taskItem(false)}>
-                      <div style={s.checkbox(false, cat.color)} onClick={() => toggleTask(task.id)} />
-                      <div style={s.catDot(cat.color)} />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={s.taskTitle(false)}>{task.title}</div>
-                        {task.note && <div style={{ fontSize: 11, color: "#aaa", marginTop: 2 }}>{task.note}</div>}
-                      </div>
-                      <span style={s.pointsBadge(cat.color)}>{task.points}pt</span>
-                      <button onClick={() => deleteTask(task.id)} style={{ background: "none", border: "none", color: "#ccc", cursor: "pointer", fontSize: 16, padding: "0 0 0 4px" }}>×</button>
+
+                {pendingTasks.length > 0 && (
+                  <>
+                    <div style={{ ...s.sectionTitle, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                      <span>Pending</span>
+                      <span style={{ fontSize: 10, color: "#ccc", fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>hold ⠿ to reorder</span>
                     </div>
-                  );
-                })}
-                {doneTasks.length > 0 && <div style={s.sectionTitle}>Done</div>}
-                {doneTasks.map(task => {
-                  const cat = getCat(task.categoryId);
-                  return (
-                    <div key={task.id} style={s.taskItem(true)}>
-                      <div style={s.checkbox(true, cat.color)} onClick={() => toggleTask(task.id)}>
-                        <svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 4L3.5 6.5L9 1" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
-                      </div>
-                      <div style={s.catDot(cat.color)} />
-                      <span style={s.taskTitle(true)}>{task.title}</span>
-                      <span style={s.pointsBadge(cat.color)}>{task.points}pt</span>
-                    </div>
-                  );
-                })}
+                    {pendingTasks.map((task, index) => (
+                      <DraggableTaskRow
+                        key={task.id}
+                        task={task}
+                        index={index}
+                        dragIdx={tasksDragIdx}
+                        dragOverIdx={tasksDragOver}
+                        dragHandlers={getTasksDragHandlers}
+                        itemRef={tasksItemRefs}
+                        onToggle={toggleTask}
+                        onDelete={deleteTask}
+                      />
+                    ))}
+                  </>
+                )}
+
+                {doneTasks.length > 0 && (
+                  <>
+                    <div style={s.sectionTitle}>Done</div>
+                    {doneTasks.map(task => <StaticTaskRow key={task.id} task={task} onToggle={toggleTask} />)}
+                  </>
+                )}
                 {filteredTasks.length === 0 && <div style={{ textAlign: "center", padding: "40px 0", color: "#aaa", fontSize: 14 }}>No tasks in this category yet.</div>}
               </div>
             )}
 
-            {/* ── FOCUS VIEW ── */}
+            {/* ── FOCUS ── */}
             {view === "focus" && (
               <div style={{ padding: "0 24px" }}>
-
-                {/* Mode selector */}
                 <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
                   {FOCUS_MODES.map(mode => (
                     <button key={mode.id} onClick={() => setFocusMode(mode.id)}
@@ -401,114 +623,93 @@
                   ))}
                 </div>
 
-                {/* Timer ring + countdown */}
                 <div style={{ display: "flex", justifyContent: "center", marginBottom: 24 }}>
                   <div style={{ position: "relative", width: 220, height: 220, display: "flex", alignItems: "center", justifyContent: "center" }}>
                     <TimerRing progress={progressAngle} color={currentMode.color} />
-                    <div style={{ textAlign: "center", zIndex: 1 }}
-                      className={timerRunning ? "timer-running" : timerComplete ? "timer-complete" : ""}>
-                      <div style={{ fontSize: 11, color: "#888780", letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 4 }}>
-                        {timerPhase === "work" ? "Focus" : "Break"}
-                      </div>
-                      <div style={{ fontSize: 52, fontWeight: 700, letterSpacing: "-3px", lineHeight: 1, color: timerComplete ? currentMode.color : "#1a1a18" }}>
-                        {formatTime(secondsLeft)}
-                      </div>
-                      {timerComplete && (
-                        <div style={{ fontSize: 12, color: currentMode.color, marginTop: 6, fontWeight: 500 }}>
-                          {timerPhase === "work" ? "Session done! 🎉" : "Break over!"}
-                        </div>
-                      )}
+                    <div style={{ textAlign: "center", zIndex: 1 }} className={timerRunning ? "timer-running" : timerComplete ? "timer-complete" : ""}>
+                      <div style={{ fontSize: 11, color: "#888780", letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 4 }}>{timerPhase === "work" ? "Focus" : "Break"}</div>
+                      <div style={{ fontSize: 52, fontWeight: 700, letterSpacing: "-3px", lineHeight: 1, color: timerComplete ? currentMode.color : "#1a1a18" }}>{formatTime(secondsLeft)}</div>
+                      {timerComplete && <div style={{ fontSize: 12, color: currentMode.color, marginTop: 6, fontWeight: 500 }}>{timerPhase === "work" ? "Session done! 🎉" : "Break over!"}</div>}
                     </div>
                   </div>
                 </div>
 
-                {/* Timer controls */}
-                <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
-                  {!timerRunning && !timerComplete && (
-                    <button onClick={startTimer} style={{ ...s.btn("primary"), flex: 2, background: currentMode.color }}>
-                      {secondsLeft === getCurrentDuration(focusMode, timerPhase) ? "Start" : "Resume"}
-                    </button>
-                  )}
-                  {timerRunning && (
-                    <button onClick={pauseTimer} style={{ ...s.btn("secondary"), flex: 2, background: "#F5F4F0" }}>Pause</button>
-                  )}
-                  {timerComplete && focusMode === "pomodoro" && timerPhase === "work" && (
-                    <button onClick={startBreak} style={{ ...s.btn("primary"), flex: 2, background: currentMode.color }}>Start break</button>
-                  )}
-                  {timerComplete && (timerPhase === "break" || focusMode !== "pomodoro") && (
-                    <button onClick={resetTimer} style={{ ...s.btn("primary"), flex: 2, background: currentMode.color }}>New session</button>
-                  )}
+                <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+                  {!timerRunning && !timerComplete && <button onClick={startTimer} style={{ ...s.btn("primary", currentMode.color), flex: 2 }}>{secondsLeft === getCurrentDuration(focusMode, timerPhase) ? "Start" : "Resume"}</button>}
+                  {timerRunning && <button onClick={pauseTimer} style={{ ...s.btn("secondary"), flex: 2 }}>Pause</button>}
+                  {timerComplete && focusMode === "pomodoro" && timerPhase === "work" && <button onClick={startBreak} style={{ ...s.btn("primary", currentMode.color), flex: 2 }}>Start break</button>}
+                  {timerComplete && (timerPhase === "break" || focusMode !== "pomodoro") && <button onClick={resetTimer} style={{ ...s.btn("primary", currentMode.color), flex: 2 }}>New session</button>}
                   <button onClick={resetTimer} style={{ ...s.btn("ghost"), flex: 1 }}>Reset</button>
                 </div>
 
-                {/* Link a task */}
+                {linkedTaskIds.length > 0 && linkedPendingCount > 0 && (
+                  <button onClick={completeLinkedTasks} style={{ ...s.btn("primary", currentMode.color), width: "100%", marginBottom: 12, textAlign: "center" }}>
+                    ✓ Mark {linkedPendingCount} linked task{linkedPendingCount !== 1 ? "s" : ""} as done
+                  </button>
+                )}
+
                 <div style={s.card}>
-                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
-                    Link a task <span style={{ fontSize: 11, color: "#aaa", fontWeight: 400 }}>— optional</span>
-                  </div>
-                  {linkedTask ? (
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <div style={s.catDot(getCat(linkedTask.categoryId).color)} />
-                      <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>{linkedTask.title}</span>
-                      <span style={s.pointsBadge(getCat(linkedTask.categoryId).color)}>{linkedTask.points}pt</span>
-                      <button onClick={() => setLinkedTaskId(null)} style={{ background: "none", border: "none", color: "#ccc", cursor: "pointer", fontSize: 16 }}>×</button>
-                    </div>
-                  ) : (
-                    <select value="" onChange={e => setLinkedTaskId(Number(e.target.value))} style={{ ...s.select, marginBottom: 0 }}>
-                      <option value="">Select a task to focus on...</option>
-                      {tasks.filter(t => !t.done).map(t => (
-                        <option key={t.id} value={t.id}>{t.title} ({t.points}pt)</option>
-                      ))}
-                    </select>
-                  )}
-                  {linkedTask && timerComplete && timerPhase === "work" && (
-                    <div style={{ fontSize: 12, color: "#1D9E75", marginTop: 8 }}>
-                      ✓ Task marked complete — {linkedTask.points} points earned!
-                    </div>
-                  )}
+                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Tasks for this session <span style={{ fontSize: 11, color: "#aaa", fontWeight: 400 }}>— tick to link</span></div>
+                  {tasks.filter(t => !t.done).length === 0 && <div style={{ fontSize: 13, color: "#aaa" }}>No pending tasks. Add some first.</div>}
+                  {tasks.filter(t => !t.done).map(task => {
+                    const cat = getCat(task.categoryId);
+                    const isLinked = linkedTaskIds.includes(task.id);
+                    return (
+                      <div key={task.id} onClick={() => toggleLinkedTask(task.id)}
+                        style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "0.5px solid #F0EFE8", cursor: "pointer" }}>
+                        <div style={{ width: 18, height: 18, borderRadius: 5, border: isLinked ? "none" : `1.5px solid ${cat.color}`, background: isLinked ? cat.color : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.15s" }}>
+                          {isLinked && <svg width="9" height="7" viewBox="0 0 10 8" fill="none"><path d="M1 4L3.5 6.5L9 1" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                        </div>
+                        <div style={s.catDot(cat.color)} />
+                        <span style={{ flex: 1, fontSize: 13, color: isLinked ? "#1a1a18" : "#666", fontWeight: isLinked ? 500 : 400 }}>{task.title}</span>
+                        <span style={s.pointsBadge(cat.color)}>{task.points}pt</span>
+                      </div>
+                    );
+                  })}
+                  {linkedTasks.filter(t => t.done).map(task => {
+                    const cat = getCat(task.categoryId);
+                    return (
+                      <div key={task.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "0.5px solid #F0EFE8", opacity: 0.5 }}>
+                        <div style={{ width: 18, height: 18, borderRadius: 5, background: cat.color, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                          <svg width="9" height="7" viewBox="0 0 10 8" fill="none"><path d="M1 4L3.5 6.5L9 1" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                        </div>
+                        <div style={s.catDot(cat.color)} />
+                        <span style={{ flex: 1, fontSize: 13, textDecoration: "line-through", color: "#aaa" }}>{task.title}</span>
+                        <span style={{ fontSize: 11, color: "#1D9E75", fontWeight: 600 }}>✓ done</span>
+                      </div>
+                    );
+                  })}
                 </div>
 
-                {/* Timer settings */}
                 <button onClick={() => setShowTimerSettings(!showTimerSettings)}
                   style={{ background: "none", border: "none", fontSize: 12, color: "#aaa", cursor: "pointer", padding: "4px 0", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 4 }}>
                   ⚙ Customise durations {showTimerSettings ? "↑" : "↓"}
                 </button>
-
                 {showTimerSettings && (
                   <div style={{ ...s.card, marginTop: 8 }}>
-                    {focusMode === "pomodoro" && (
-                      <>
-                        <div style={{ marginBottom: 14 }}>
-                          <div style={{ fontSize: 12, color: "#888780", marginBottom: 6 }}>Work duration: <strong>{pomodoroWork} min</strong></div>
-                          <input type="range" min={5} max={60} step={5} value={pomodoroWork}
-                            onChange={e => { setPomodoroWork(Number(e.target.value)); if (!timerRunning) setSecondsLeft(Number(e.target.value) * 60); }}
-                            style={{ width: "100%" }} />
-                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#ccc" }}><span>5m</span><span>60m</span></div>
-                        </div>
-                        <div>
-                          <div style={{ fontSize: 12, color: "#888780", marginBottom: 6 }}>Break duration: <strong>{pomodoroBreak} min</strong></div>
-                          <input type="range" min={1} max={30} step={1} value={pomodoroBreak}
-                            onChange={e => setPomodoroBreak(Number(e.target.value))}
-                            style={{ width: "100%" }} />
-                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#ccc" }}><span>1m</span><span>30m</span></div>
-                        </div>
-                      </>
-                    )}
+                    {focusMode === "pomodoro" && (<>
+                      <div style={{ marginBottom: 14 }}>
+                        <div style={{ fontSize: 12, color: "#888780", marginBottom: 6 }}>Work duration: <strong>{pomodoroWork} min</strong></div>
+                        <input type="range" min={5} max={60} step={5} value={pomodoroWork} onChange={e => { setPomodoroWork(Number(e.target.value)); if (!timerRunning) setSecondsLeft(Number(e.target.value) * 60); }} style={{ width: "100%" }} />
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#ccc" }}><span>5m</span><span>60m</span></div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 12, color: "#888780", marginBottom: 6 }}>Break duration: <strong>{pomodoroBreak} min</strong></div>
+                        <input type="range" min={1} max={30} step={1} value={pomodoroBreak} onChange={e => setPomodoroBreak(Number(e.target.value))} style={{ width: "100%" }} />
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#ccc" }}><span>1m</span><span>30m</span></div>
+                      </div>
+                    </>)}
                     {focusMode === "sprint" && (
                       <div>
                         <div style={{ fontSize: 12, color: "#888780", marginBottom: 6 }}>Sprint duration: <strong>{sprintWork} min</strong></div>
-                        <input type="range" min={5} max={30} step={5} value={sprintWork}
-                          onChange={e => { setSprintWork(Number(e.target.value)); if (!timerRunning) setSecondsLeft(Number(e.target.value) * 60); }}
-                          style={{ width: "100%" }} />
+                        <input type="range" min={5} max={30} step={5} value={sprintWork} onChange={e => { setSprintWork(Number(e.target.value)); if (!timerRunning) setSecondsLeft(Number(e.target.value) * 60); }} style={{ width: "100%" }} />
                         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#ccc" }}><span>5m</span><span>30m</span></div>
                       </div>
                     )}
                     {focusMode === "deep" && (
                       <div>
                         <div style={{ fontSize: 12, color: "#888780", marginBottom: 6 }}>Deep work duration: <strong>{deepWork} min</strong></div>
-                        <input type="range" min={30} max={180} step={15} value={deepWork}
-                          onChange={e => { setDeepWork(Number(e.target.value)); if (!timerRunning) setSecondsLeft(Number(e.target.value) * 60); }}
-                          style={{ width: "100%" }} />
+                        <input type="range" min={30} max={180} step={15} value={deepWork} onChange={e => { setDeepWork(Number(e.target.value)); if (!timerRunning) setSecondsLeft(Number(e.target.value) * 60); }} style={{ width: "100%" }} />
                         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#ccc" }}><span>30m</span><span>180m</span></div>
                       </div>
                     )}
@@ -517,7 +718,7 @@
               </div>
             )}
 
-            {/* ── SETTINGS VIEW ── */}
+            {/* ── SETTINGS ── */}
             {view === "settings" && (
               <div style={{ padding: "0 24px" }}>
                 <div style={s.card}>
@@ -530,19 +731,17 @@
                 <div style={s.sectionTitle}>Categories</div>
                 {categories.map(cat => (
                   <div key={cat.id} style={{ ...s.card, display: "flex", alignItems: "center", gap: 12 }}>
-                    <input type="color" value={cat.color} onChange={e => setCategories(prev => prev.map(c => c.id === cat.id ? { ...c, color: e.target.value } : c))} style={{ width: 28, height: 28, border: "none", borderRadius: 6, cursor: "pointer", padding: 0, background: "none" }} />
-                    {editingCategory === cat.id ? (
-                      <input autoFocus value={cat.label} onChange={e => setCategories(prev => prev.map(c => c.id === cat.id ? { ...c, label: e.target.value } : c))} onBlur={() => setEditingCategory(null)} style={{ ...s.input, marginBottom: 0, flex: 1 }} />
-                    ) : (
-                      <span style={{ flex: 1, fontSize: 14, fontWeight: 500 }}>{cat.label}</span>
-                    )}
+                    <input type="color" value={cat.color} onChange={e => setCategories(prev => prev.map(c => c.id === cat.id ? { ...c, color: e.target.value } : c))} style={{ width: 28, height: 28, border: "none", borderRadius: 6, cursor: "pointer", padding: 0 }} />
+                    {editingCategory === cat.id
+                      ? <input autoFocus value={cat.label} onChange={e => setCategories(prev => prev.map(c => c.id === cat.id ? { ...c, label: e.target.value } : c))} onBlur={() => setEditingCategory(null)} style={{ ...s.input, marginBottom: 0, flex: 1 }} />
+                      : <span style={{ flex: 1, fontSize: 14, fontWeight: 500 }}>{cat.label}</span>}
                     <button onClick={() => setEditingCategory(cat.id)} style={{ background: "none", border: "none", color: "#aaa", cursor: "pointer", fontSize: 13 }}>edit</button>
                   </div>
                 ))}
                 <div style={s.card}>
                   <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Add category</div>
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <input type="color" value={newCatColor} onChange={e => setNewCatColor(e.target.value)} style={{ width: 32, height: 32, border: "none", borderRadius: 8, cursor: "pointer", padding: 0, background: "none", flexShrink: 0 }} />
+                    <input type="color" value={newCatColor} onChange={e => setNewCatColor(e.target.value)} style={{ width: 32, height: 32, border: "none", borderRadius: 8, cursor: "pointer", padding: 0, flexShrink: 0 }} />
                     <input placeholder="Category name" value={newCatLabel} onChange={e => setNewCatLabel(e.target.value)} onKeyDown={e => e.key === "Enter" && addCategory()} style={{ ...s.input, marginBottom: 0, flex: 1 }} />
                     <button onClick={addCategory} style={{ ...s.btn("primary"), whiteSpace: "nowrap" }}>Add</button>
                   </div>
@@ -550,7 +749,7 @@
               </div>
             )}
 
-            {/* ── ADD TASK MODAL ── */}
+            {/* ADD TASK MODAL */}
             {showAddTask && (
               <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "flex-end", zIndex: 100 }} onClick={e => e.target === e.currentTarget && setShowAddTask(false)}>
                 <div style={{ background: "#fff", borderRadius: "20px 20px 0 0", padding: "24px 24px 40px", width: "100%", maxWidth: 480, margin: "0 auto" }}>
@@ -564,7 +763,8 @@
                     <div style={{ fontSize: 12, color: "#888", marginBottom: 8 }}>Points — how much effort is this?</div>
                     <div style={{ display: "flex", gap: 8 }}>
                       {POINT_VALUES.map(p => (
-                        <button key={p} onClick={() => setNewTask(prev => ({ ...prev, points: p }))} style={{ flex: 1, padding: "8px 0", borderRadius: 10, border: newTask.points === p ? "none" : "0.5px solid #D3D1C7", background: newTask.points === p ? "#1a1a18" : "#F5F4F0", color: newTask.points === p ? "#fff" : "#1a1a18", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
+                        <button key={p} onClick={() => setNewTask(prev => ({ ...prev, points: p }))}
+                          style={{ flex: 1, padding: "8px 0", borderRadius: 10, border: newTask.points === p ? "none" : "0.5px solid #D3D1C7", background: newTask.points === p ? "#1a1a18" : "#F5F4F0", color: newTask.points === p ? "#fff" : "#1a1a18", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
                           {p}
                         </button>
                       ))}
@@ -578,16 +778,14 @@
               </div>
             )}
 
-            {/* FAB */}
             <button style={s.fab} onClick={() => setShowAddTask(true)}>+</button>
 
-            {/* BOTTOM NAV — now 4 tabs */}
             <nav style={s.nav}>
               {[
-                { id: "dashboard", label: "Today", icon: "◈" },
-                { id: "tasks", label: "Tasks", icon: "☰" },
-                { id: "focus", label: "Focus", icon: "◎" },
-                { id: "settings", label: "Settings", icon: "⊙" },
+                { id: "dashboard", label: "Today",    icon: "◈" },
+                { id: "tasks",     label: "Tasks",    icon: "☰" },
+                { id: "focus",     label: "Focus",    icon: "◎" },
+                { id: "settings",  label: "Settings", icon: "⊙" },
               ].map(tab => (
                 <button key={tab.id} style={s.navBtn(view === tab.id)} onClick={() => setView(tab.id)}>
                   <span style={{ fontSize: 18 }}>{tab.icon}</span>
