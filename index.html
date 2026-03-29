@@ -15,16 +15,34 @@
         60%  { opacity:0.6; transform: scale(0.88) translateX(30px); }
         100% { opacity:0; transform: scale(0.75) translateX(80px); }
       }
-      @keyframes tabPulse {
-        0%   { transform: scale(1); }
-        40%  { transform: scale(1.08); }
-        100% { transform: scale(1); }
-      }
+      @keyframes tabPulse { 0%{transform:scale(1)} 40%{transform:scale(1.08)} 100%{transform:scale(1)} }
       .timer-running { animation: timerPulse 2s ease-in-out infinite; }
       .timer-complete { animation: completePop 0.4s ease; }
       .task-completing { animation: taskComplete 0.45s ease forwards; pointer-events: none; }
       .tab-pulse { animation: tabPulse 0.35s ease; }
       * { box-sizing: border-box; }
+      body { overflow-x: hidden; }
+
+      /* Floating drag clone that follows the pointer */
+      .drag-clone {
+        position: fixed;
+        pointer-events: none;
+        z-index: 9999;
+        opacity: 0.95;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+        border-radius: 12px;
+        transform: scale(1.03);
+        transition: box-shadow 0.1s;
+      }
+
+      /* Drop indicator line */
+      .drop-indicator {
+        height: 2px;
+        background: #378ADD;
+        border-radius: 2px;
+        margin: -1px 0;
+        transition: opacity 0.1s;
+      }
     </style>
   </head>
   <body style="margin:0;padding:0;background:#FAFAF8;">
@@ -83,46 +101,134 @@
         );
       }
 
-      // ── DRAG HOOK ─────────────────────────────────────────────────────────
-      // Uses task IDs as the source of truth — much more reliable than indexes.
-      // Only the ⠿ handle triggers drag. Works on desktop and mobile via
-      // HTML5 drag events on the handle div itself.
-      function useDrag(setTasks) {
+      // ── SORTABLE LIST ─────────────────────────────────────────────────────
+      // A container that handles pointer-based drag and drop for its children.
+      // Each child must have a data-id attribute matching the task id.
+      // On drop, calls onReorder(draggedId, targetId, position) where
+      // position is "before" or "after" the target item.
+      function SortableList({ items, setTasks, renderItem }) {
+        const listRef = useRef(null);
+        const cloneRef = useRef(null);
+        const dragState = useRef({
+          active: false,
+          id: null,
+          startY: 0,
+          offsetY: 0,
+          itemHeight: 0,
+        });
         const [dragId, setDragId] = useState(null);
-        const [dragOverId, setDragOverId] = useState(null);
+        const [dropIndex, setDropIndex] = useState(null); // index to show line ABOVE
 
-        function onDragStart(id) {
+        function getItemEls() {
+          if (!listRef.current) return [];
+          return Array.from(listRef.current.querySelectorAll("[data-drag-item]"));
+        }
+
+        function findDropIndex(clientY) {
+          const els = getItemEls();
+          for (let i = 0; i < els.length; i++) {
+            const rect = els[i].getBoundingClientRect();
+            const mid = rect.top + rect.height / 2;
+            if (clientY < mid) return i;
+          }
+          return els.length;
+        }
+
+        function onHandlePointerDown(e, id) {
+          e.preventDefault();
+          e.stopPropagation();
+
+          // Find the task row element
+          const itemEl = e.currentTarget.closest("[data-drag-item]");
+          if (!itemEl) return;
+
+          const rect = itemEl.getBoundingClientRect();
+
+          // Create a visual clone that follows the pointer
+          const clone = itemEl.cloneNode(true);
+          clone.className = "drag-clone";
+          clone.style.width = rect.width + "px";
+          clone.style.top = rect.top + "px";
+          clone.style.left = rect.left + "px";
+          clone.style.background = "#fff";
+          document.body.appendChild(clone);
+          cloneRef.current = clone;
+
+          dragState.current = {
+            active: true,
+            id,
+            startY: e.clientY,
+            offsetY: e.clientY - rect.top,
+            itemHeight: rect.height,
+          };
+
           setDragId(id);
+
+          // Attach move/up to window so we don't lose the pointer
+          window.addEventListener("pointermove", onPointerMove);
+          window.addEventListener("pointerup", onPointerUp);
         }
 
-        function onDragOver(e, id) {
-          e.preventDefault();
-          if (id !== dragId) setDragOverId(id);
+        function onPointerMove(e) {
+          if (!dragState.current.active || !cloneRef.current) return;
+          const y = e.clientY - dragState.current.offsetY;
+          cloneRef.current.style.top = y + "px";
+          const idx = findDropIndex(e.clientY);
+          setDropIndex(idx);
         }
 
-        function onDrop(e, id) {
-          e.preventDefault();
-          if (dragId && id && dragId !== id) {
+        function onPointerUp(e) {
+          if (!dragState.current.active) return;
+          const { id } = dragState.current;
+
+          // Clean up clone
+          if (cloneRef.current) { cloneRef.current.remove(); cloneRef.current = null; }
+          window.removeEventListener("pointermove", onPointerMove);
+          window.removeEventListener("pointerup", onPointerUp);
+
+          const idx = findDropIndex(e.clientY);
+          const fromIdx = items.findIndex(t => t.id === id);
+
+          if (fromIdx !== -1 && idx !== fromIdx && idx !== fromIdx + 1) {
             setTasks(prev => {
-              const arr = [...prev];
-              const fromIdx = arr.findIndex(t => t.id === dragId);
-              const toIdx   = arr.findIndex(t => t.id === id);
-              if (fromIdx === -1 || toIdx === -1) return prev;
+              const pending = prev.filter(t => !t.done);
+              const done    = prev.filter(t => t.done);
+              const arr     = [...pending];
               const [moved] = arr.splice(fromIdx, 1);
-              arr.splice(toIdx, 0, moved);
-              return arr;
+              const insertAt = idx > fromIdx ? idx - 1 : idx;
+              arr.splice(insertAt, 0, moved);
+              return [...arr, ...done];
             });
           }
+
+          dragState.current.active = false;
           setDragId(null);
-          setDragOverId(null);
+          setDropIndex(null);
         }
 
-        function onDragEnd() {
-          setDragId(null);
-          setDragOverId(null);
-        }
-
-        return { dragId, dragOverId, onDragStart, onDragOver, onDrop, onDragEnd };
+        return (
+          <div ref={listRef}>
+            {items.map((item, index) => (
+              <div key={item.id}>
+                {/* Drop indicator line — appears ABOVE this item when dragging */}
+                {dropIndex === index && dragId !== item.id && (
+                  <div className="drop-indicator" />
+                )}
+                <div
+                  data-drag-item
+                  data-id={item.id}
+                  style={{ opacity: dragId === item.id ? 0.35 : 1, transition: "opacity 0.15s" }}
+                >
+                  {renderItem(item, (e) => onHandlePointerDown(e, item.id))}
+                </div>
+              </div>
+            ))}
+            {/* Drop indicator at the very end */}
+            {dropIndex === items.length && (
+              <div className="drop-indicator" />
+            )}
+          </div>
+        );
       }
 
       function ProductivityApp() {
@@ -143,12 +249,10 @@
         const [showAllTasks, setShowAllTasks] = useState(false);
         const animRef = useRef(null);
 
-        // Dashboard tabs
         const [dashTab, setDashTab] = useState("pending");
         const [completingIds, setCompletingIds] = useState([]);
         const [completedTabPulse, setCompletedTabPulse] = useState(false);
 
-        // Focus state
         const [focusMode, setFocusMode] = useState("pomodoro");
         const [timerPhase, setTimerPhase] = useState("work");
         const [timerRunning, setTimerRunning] = useState(false);
@@ -163,26 +267,20 @@
         const [showTimerSettings, setShowTimerSettings] = useState(false);
         const timerRef = useRef(null);
 
-        // Single shared drag instance — works across both Today and Tasks tabs
-        const { dragId, dragOverId, onDragStart, onDragOver, onDrop, onDragEnd } = useDrag(setTasks);
-
-        // ── DERIVED ──────────────────────────────────────────────────────
         useEffect(() => {
           const pts = tasks.filter(t => t.done).reduce((sum, t) => sum + t.points, 0);
           setTotalPoints(pts);
         }, [tasks]);
 
-        const completedToday = tasks.filter(t => t.done).length;
-        const totalTasks = tasks.length;
-        const progressPct = dailyGoal > 0 ? Math.min(100, Math.round((totalPoints / dailyGoal) * 100)) : 0;
-        const pendingTasks = (filterCat === "all" ? tasks : tasks.filter(t => t.categoryId === filterCat)).filter(t => !t.done);
-        const doneTasks    = (filterCat === "all" ? tasks : tasks.filter(t => t.categoryId === filterCat)).filter(t => t.done);
-        const filteredTasks = filterCat === "all" ? tasks : tasks.filter(t => t.categoryId === filterCat);
-        const dashPendingAll = (dashFilterCat === "all" ? tasks : tasks.filter(t => t.categoryId === dashFilterCat)).filter(t => !t.done);
-        const dashPending    = dashPendingAll.slice(0, showAllTasks ? undefined : 10);
-        const dashDone       = (dashFilterCat === "all" ? tasks : tasks.filter(t => t.categoryId === dashFilterCat)).filter(t => t.done);
+        const completedToday  = tasks.filter(t => t.done).length;
+        const totalTasks      = tasks.length;
+        const progressPct     = dailyGoal > 0 ? Math.min(100, Math.round((totalPoints / dailyGoal) * 100)) : 0;
+        const pendingTasks    = (filterCat === "all" ? tasks : tasks.filter(t => t.categoryId === filterCat)).filter(t => !t.done);
+        const doneTasks       = (filterCat === "all" ? tasks : tasks.filter(t => t.categoryId === filterCat)).filter(t => t.done);
+        const filteredTasks   = filterCat === "all" ? tasks : tasks.filter(t => t.categoryId === filterCat);
+        const dashPendingAll  = (dashFilterCat === "all" ? tasks : tasks.filter(t => t.categoryId === dashFilterCat)).filter(t => !t.done);
+        const dashDone        = (dashFilterCat === "all" ? tasks : tasks.filter(t => t.categoryId === dashFilterCat)).filter(t => t.done);
 
-        // ── FOCUS TIMER ──────────────────────────────────────────────────
         const getCurrentDuration = useCallback((mode, phase) => {
           if (mode === "pomodoro") return (phase === "work" ? pomodoroWork : pomodoroBreak) * 60;
           if (mode === "sprint") return sprintWork * 60;
@@ -212,13 +310,12 @@
         function toggleLinkedTask(id) { setLinkedTaskIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]); }
         function completeLinkedTasks() { linkedTaskIds.forEach(id => { const t = tasks.find(x => x.id === id); if (t && !t.done) animateTaskComplete(id); }); }
 
-        const currentMode    = FOCUS_MODES.find(m => m.id === focusMode);
-        const totalDuration  = getCurrentDuration(focusMode, timerPhase);
-        const progressAngle  = ((totalDuration - secondsLeft) / totalDuration) * 360;
-        const linkedTasks    = tasks.filter(t => linkedTaskIds.includes(t.id));
+        const currentMode        = FOCUS_MODES.find(m => m.id === focusMode);
+        const totalDuration      = getCurrentDuration(focusMode, timerPhase);
+        const progressAngle      = ((totalDuration - secondsLeft) / totalDuration) * 360;
+        const linkedTasks        = tasks.filter(t => linkedTaskIds.includes(t.id));
         const linkedPendingCount = linkedTasks.filter(t => !t.done).length;
 
-        // ── ANIMATED COMPLETION ──────────────────────────────────────────
         function animateTaskComplete(id) {
           setCompletingIds(prev => [...prev, id]);
           setPointsAnimation(true);
@@ -235,8 +332,8 @@
         function toggleTask(id) {
           const task = tasks.find(t => t.id === id);
           if (!task) return;
-          if (!task.done) { animateTaskComplete(id); }
-          else { setTasks(prev => prev.map(t => t.id === id ? { ...t, done: false } : t)); }
+          if (!task.done) animateTaskComplete(id);
+          else setTasks(prev => prev.map(t => t.id === id ? { ...t, done: false } : t));
         }
 
         function addTask() {
@@ -254,7 +351,6 @@
           setNewCatLabel(""); setNewCatColor("#378ADD");
         }
 
-        // ── STYLES ───────────────────────────────────────────────────────
         const s = {
           app: { fontFamily: "'DM Sans','Helvetica Neue',sans-serif", minHeight: "100vh", background: "#FAFAF8", color: "#1a1a18", maxWidth: 480, margin: "0 auto", paddingBottom: 80 },
           header: { padding: "28px 24px 0" },
@@ -268,14 +364,7 @@
           progressBar: { height: 6, background: "#EEEDE8", borderRadius: 99, overflow: "hidden", margin: "12px 0 4px" },
           progressFill: (pct, color="#1D9E75") => ({ height: "100%", width: `${pct}%`, background: color, borderRadius: 99, transition: "width 0.5s ease" }),
           sectionTitle: { fontSize: 11, fontWeight: 600, letterSpacing: "0.8px", textTransform: "uppercase", color: "#888780", margin: "20px 0 8px" },
-          taskItem: (done, isDragging, isOver) => ({
-            display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", marginBottom: 6, borderRadius: 12,
-            background: isOver ? "#F0F7FF" : done ? "#F9F9F7" : "#fff",
-            border: isOver ? "1.5px dashed #378ADD" : "0.5px solid #E5E3DC",
-            opacity: isDragging ? 0.4 : done ? 0.65 : 1,
-            transition: "opacity 0.2s, border 0.15s, background 0.15s",
-            userSelect: "none",
-          }),
+          taskItem: (done) => ({ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", marginBottom: 6, borderRadius: 12, background: done ? "#F9F9F7" : "#fff", border: "0.5px solid #E5E3DC", opacity: done ? 0.65 : 1, userSelect: "none" }),
           catDot: (color) => ({ width: 9, height: 9, borderRadius: "50%", background: color, flexShrink: 0 }),
           taskTitle: (done) => ({ flex: 1, fontSize: 14, fontWeight: 500, textDecoration: done ? "line-through" : "none", color: done ? "#aaa" : "#1a1a18", minWidth: 0 }),
           pointsBadge: (color) => ({ fontSize: 11, fontWeight: 600, color: color, background: color + "18", borderRadius: 6, padding: "2px 8px", flexShrink: 0 }),
@@ -288,48 +377,33 @@
           btn: (variant="primary", color) => ({ padding: "10px 18px", borderRadius: 10, border: variant === "ghost" ? "0.5px solid #D3D1C7" : "none", background: variant === "primary" ? (color || "#1a1a18") : variant === "ghost" ? "transparent" : "#F5F4F0", color: variant === "primary" ? "#fff" : "#1a1a18", fontSize: 14, fontWeight: 500, cursor: "pointer", fontFamily: "inherit" }),
         };
 
-        // ── DRAGGABLE TASK ROW ────────────────────────────────────────────
-        // The outer div handles dragOver + drop.
-        // Only the ⠿ handle div is draggable — this prevents accidental
-        // drags when tapping the checkbox or task title.
-        function DraggableTaskRow({ task, onToggle, onDelete }) {
+        // ── TASK ROW RENDERERS ────────────────────────────────────────────
+        function renderDraggableTask(task, onHandleDown) {
           const cat = getCat(task.categoryId);
-          const isDragging = dragId === task.id;
-          const isOver     = dragOverId === task.id && dragId !== task.id;
           const isCompleting = completingIds.includes(task.id);
           return (
-            <div
-              className={isCompleting ? "task-completing" : ""}
-              style={s.taskItem(task.done, isDragging, isOver)}
-              onDragOver={e => onDragOver(e, task.id)}
-              onDrop={e => onDrop(e, task.id)}
-            >
+            <div className={isCompleting ? "task-completing" : ""} style={s.taskItem(false)}>
               <div
-                draggable
-                onDragStart={() => onDragStart(task.id)}
-                onDragEnd={onDragEnd}
-                style={{ color: "#ccc", fontSize: 16, flexShrink: 0, padding: "0 4px 0 0", cursor: "grab", userSelect: "none" }}
+                onPointerDown={onHandleDown}
+                style={{ color: "#bbb", fontSize: 18, flexShrink: 0, padding: "0 6px 0 0", cursor: "grab", touchAction: "none", lineHeight: 1 }}
               >⠿</div>
-              <div style={s.checkbox(task.done, cat.color)} onClick={() => onToggle(task.id)}>
-                {task.done && <svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 4L3.5 6.5L9 1" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-              </div>
+              <div style={s.checkbox(false, cat.color)} onClick={() => toggleTask(task.id)} />
               <div style={s.catDot(cat.color)} />
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={s.taskTitle(task.done)}>{task.title}</div>
+                <div style={s.taskTitle(false)}>{task.title}</div>
                 {task.note && <div style={{ fontSize: 11, color: "#aaa", marginTop: 2 }}>{task.note}</div>}
               </div>
               <span style={s.pointsBadge(cat.color)}>{task.points}pt</span>
-              <button onClick={() => onDelete(task.id)} style={{ background: "none", border: "none", color: "#ccc", cursor: "pointer", fontSize: 16, padding: "0 0 0 4px", flexShrink: 0 }}>×</button>
+              <button onClick={() => deleteTask(task.id)} style={{ background: "none", border: "none", color: "#ccc", cursor: "pointer", fontSize: 16, padding: "0 0 0 4px", flexShrink: 0 }}>×</button>
             </div>
           );
         }
 
-        // ── STATIC TASK ROW ───────────────────────────────────────────────
-        function StaticTaskRow({ task, onToggle }) {
+        function StaticTaskRow({ task }) {
           const cat = getCat(task.categoryId);
           return (
-            <div style={s.taskItem(true, false, false)}>
-              <div style={s.checkbox(true, cat.color)} onClick={() => onToggle(task.id)}>
+            <div style={s.taskItem(true)}>
+              <div style={s.checkbox(true, cat.color)} onClick={() => toggleTask(task.id)}>
                 <svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 4L3.5 6.5L9 1" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
               </div>
               <div style={s.catDot(cat.color)} />
@@ -342,7 +416,6 @@
           );
         }
 
-        // ── RENDER ───────────────────────────────────────────────────────
         return (
           <div style={s.app}>
             <div style={s.header}>
@@ -416,7 +489,6 @@
 
                 {tasks.length > 0 && (
                   <>
-                    {/* Browser-style tabs */}
                     <div style={{ display: "flex", borderBottom: "0.5px solid #E5E3DC" }}>
                       <button onClick={() => setDashTab("pending")} style={{ flex: 1, padding: "10px 0", fontSize: 12, fontWeight: dashTab === "pending" ? 600 : 400, color: dashTab === "pending" ? "#1a1a18" : "#aaa", background: dashTab === "pending" ? "#fff" : "#F5F4F0", border: "0.5px solid #E5E3DC", borderBottom: dashTab === "pending" ? "none" : "0.5px solid #E5E3DC", borderRadius: "10px 10px 0 0", cursor: "pointer", fontFamily: "inherit", marginBottom: dashTab === "pending" ? "-0.5px" : 0, letterSpacing: "0.4px", transition: "all 0.2s" }}>
                         UP NEXT
@@ -432,9 +504,11 @@
                       {dashTab === "pending" && (
                         <>
                           {dashPendingAll.length === 0 && <div style={{ textAlign: "center", padding: "24px 0", color: "#aaa", fontSize: 13 }}>All tasks complete! 🎉</div>}
-                          {dashPendingAll.map(task => (
-                            <DraggableTaskRow key={task.id} task={task} onToggle={toggleTask} onDelete={deleteTask} />
-                          ))}
+                          <SortableList
+                            items={showAllTasks ? dashPendingAll : dashPendingAll.slice(0, 10)}
+                            setTasks={setTasks}
+                            renderItem={renderDraggableTask}
+                          />
                           {!showAllTasks && dashPendingAll.length > 10 && (
                             <div style={{ textAlign: "center", fontSize: 12, color: "#aaa", marginTop: 6, cursor: "pointer" }} onClick={() => setShowAllTasks(true)}>
                               + {dashPendingAll.length - 10} more — tap to expand
@@ -450,7 +524,7 @@
                       {dashTab === "completed" && (
                         <>
                           {dashDone.length === 0 && <div style={{ textAlign: "center", padding: "24px 0", color: "#aaa", fontSize: 13 }}>No tasks completed yet today.</div>}
-                          {dashDone.map(task => <StaticTaskRow key={task.id} task={task} onToggle={toggleTask} />)}
+                          {dashDone.map(task => <StaticTaskRow key={task.id} task={task} />)}
                         </>
                       )}
                     </div>
@@ -474,15 +548,19 @@
                   <>
                     <div style={{ ...s.sectionTitle, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                       <span>Pending</span>
-                      <span style={{ fontSize: 10, color: "#ccc", fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>drag ⠿ to reorder</span>
+                      <span style={{ fontSize: 10, color: "#ccc", fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>hold ⠿ to reorder</span>
                     </div>
-                    {pendingTasks.map(task => <DraggableTaskRow key={task.id} task={task} onToggle={toggleTask} onDelete={deleteTask} />)}
+                    <SortableList
+                      items={pendingTasks}
+                      setTasks={setTasks}
+                      renderItem={renderDraggableTask}
+                    />
                   </>
                 )}
                 {doneTasks.length > 0 && (
                   <>
                     <div style={s.sectionTitle}>Done</div>
-                    {doneTasks.map(task => <StaticTaskRow key={task.id} task={task} onToggle={toggleTask} />)}
+                    {doneTasks.map(task => <StaticTaskRow key={task.id} task={task} />)}
                   </>
                 )}
                 {filteredTasks.length === 0 && <div style={{ textAlign: "center", padding: "40px 0", color: "#aaa", fontSize: 14 }}>No tasks in this category yet.</div>}
