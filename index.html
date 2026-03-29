@@ -83,62 +83,46 @@
         );
       }
 
-      // ── TOUCH DRAG HOOK ───────────────────────────────────────────────────
-      // This replaces HTML5 drag events with pointer events, which work on
-      // both desktop (mouse) and mobile (touch). The hook returns handlers
-      // to attach to each draggable item and a drop zone indicator.
-      function useTouchDrag(items, setItems) {
-        const [dragIndex, setDragIndex] = useState(null);
-        const [dragOver, setDragOver] = useState(null);
-        const dragY = useRef(0);
-        const itemRefs = useRef([]);
+      // ── DRAG HOOK ─────────────────────────────────────────────────────────
+      // Uses task IDs as the source of truth — much more reliable than indexes.
+      // Only the ⠿ handle triggers drag. Works on desktop and mobile via
+      // HTML5 drag events on the handle div itself.
+      function useDrag(setTasks) {
+        const [dragId, setDragId] = useState(null);
+        const [dragOverId, setDragOverId] = useState(null);
 
-        function onPointerDown(e, index) {
-          e.currentTarget.setPointerCapture(e.pointerId);
-          setDragIndex(index);
-          dragY.current = e.clientY;
+        function onDragStart(id) {
+          setDragId(id);
         }
 
-        function onPointerMove(e, index) {
-          if (dragIndex === null) return;
-          const delta = e.clientY - dragY.current;
-          // Find which slot we're hovering over by checking element positions
-          const els = itemRefs.current.filter(Boolean);
-          let closest = dragIndex;
-          let closestDist = Infinity;
-          els.forEach((el, i) => {
-            if (!el) return;
-            const rect = el.getBoundingClientRect();
-            const mid = rect.top + rect.height / 2;
-            const dist = Math.abs(e.clientY - mid);
-            if (dist < closestDist) { closestDist = dist; closest = i; }
-          });
-          setDragOver(closest);
+        function onDragOver(e, id) {
+          e.preventDefault();
+          if (id !== dragId) setDragOverId(id);
         }
 
-        function onPointerUp(e) {
-          if (dragIndex !== null && dragOver !== null && dragIndex !== dragOver) {
-            setItems(prev => {
+        function onDrop(e, id) {
+          e.preventDefault();
+          if (dragId && id && dragId !== id) {
+            setTasks(prev => {
               const arr = [...prev];
-              const [moved] = arr.splice(dragIndex, 1);
-              arr.splice(dragOver, 0, moved);
+              const fromIdx = arr.findIndex(t => t.id === dragId);
+              const toIdx   = arr.findIndex(t => t.id === id);
+              if (fromIdx === -1 || toIdx === -1) return prev;
+              const [moved] = arr.splice(fromIdx, 1);
+              arr.splice(toIdx, 0, moved);
               return arr;
             });
           }
-          setDragIndex(null);
-          setDragOver(null);
+          setDragId(null);
+          setDragOverId(null);
         }
 
-        function getDragHandlers(index) {
-          return {
-            onPointerDown: e => onPointerDown(e, index),
-            onPointerMove: e => onPointerMove(e, index),
-            onPointerUp,
-            onPointerCancel: onPointerUp,
-          };
+        function onDragEnd() {
+          setDragId(null);
+          setDragOverId(null);
         }
 
-        return { dragIndex, dragOver, getDragHandlers, itemRefs };
+        return { dragId, dragOverId, onDragStart, onDragOver, onDrop, onDragEnd };
       }
 
       function ProductivityApp() {
@@ -159,13 +143,10 @@
         const [showAllTasks, setShowAllTasks] = useState(false);
         const animRef = useRef(null);
 
-        // Dashboard tab state — "pending" | "completed"
+        // Dashboard tabs
         const [dashTab, setDashTab] = useState("pending");
-        // Track which task ids are mid-animation (completing)
         const [completingIds, setCompletingIds] = useState([]);
-        // Pulse the completed tab when a task finishes
         const [completedTabPulse, setCompletedTabPulse] = useState(false);
-        const completedTabRef = useRef(null);
 
         // Focus state
         const [focusMode, setFocusMode] = useState("pomodoro");
@@ -182,33 +163,10 @@
         const [showTimerSettings, setShowTimerSettings] = useState(false);
         const timerRef = useRef(null);
 
-        // Touch drag for tasks tab
-        const pendingForDrag = tasks.filter(t => !t.done);
-        const { dragIndex: tasksDragIdx, dragOver: tasksDragOver, getDragHandlers: getTasksDragHandlers, itemRefs: tasksItemRefs } = useTouchDrag(
-          pendingForDrag,
-          (reordered) => {
-            setTasks(prev => {
-              const done = prev.filter(t => t.done);
-              return [...reordered, ...done];
-            });
-          }
-        );
+        // Single shared drag instance — works across both Today and Tasks tabs
+        const { dragId, dragOverId, onDragStart, onDragOver, onDrop, onDragEnd } = useDrag(setTasks);
 
-        // Touch drag for dashboard pending tasks
-        const dashPendingAll = (dashFilterCat === "all" ? tasks : tasks.filter(t => t.categoryId === dashFilterCat)).filter(t => !t.done);
-        const { dragIndex: dashDragIdx, dragOver: dashDragOver, getDragHandlers: getDashDragHandlers, itemRefs: dashItemRefs } = useTouchDrag(
-          dashPendingAll,
-          (reordered) => {
-            setTasks(prev => {
-              const done = prev.filter(t => t.done);
-              const otherPending = prev.filter(t => !t.done && (dashFilterCat !== "all" ? t.categoryId !== dashFilterCat : false));
-              return dashFilterCat === "all"
-                ? [...reordered, ...done]
-                : [...otherPending, ...reordered, ...done];
-            });
-          }
-        );
-
+        // ── DERIVED ──────────────────────────────────────────────────────
         useEffect(() => {
           const pts = tasks.filter(t => t.done).reduce((sum, t) => sum + t.points, 0);
           setTotalPoints(pts);
@@ -217,13 +175,14 @@
         const completedToday = tasks.filter(t => t.done).length;
         const totalTasks = tasks.length;
         const progressPct = dailyGoal > 0 ? Math.min(100, Math.round((totalPoints / dailyGoal) * 100)) : 0;
-
         const pendingTasks = (filterCat === "all" ? tasks : tasks.filter(t => t.categoryId === filterCat)).filter(t => !t.done);
-        const doneTasks = (filterCat === "all" ? tasks : tasks.filter(t => t.categoryId === filterCat)).filter(t => t.done);
+        const doneTasks    = (filterCat === "all" ? tasks : tasks.filter(t => t.categoryId === filterCat)).filter(t => t.done);
         const filteredTasks = filterCat === "all" ? tasks : tasks.filter(t => t.categoryId === filterCat);
-        const dashPending = dashPendingAll.slice(0, showAllTasks ? undefined : 10);
-        const dashDone = (dashFilterCat === "all" ? tasks : tasks.filter(t => t.categoryId === dashFilterCat)).filter(t => t.done);
+        const dashPendingAll = (dashFilterCat === "all" ? tasks : tasks.filter(t => t.categoryId === dashFilterCat)).filter(t => !t.done);
+        const dashPending    = dashPendingAll.slice(0, showAllTasks ? undefined : 10);
+        const dashDone       = (dashFilterCat === "all" ? tasks : tasks.filter(t => t.categoryId === dashFilterCat)).filter(t => t.done);
 
+        // ── FOCUS TIMER ──────────────────────────────────────────────────
         const getCurrentDuration = useCallback((mode, phase) => {
           if (mode === "pomodoro") return (phase === "work" ? pomodoroWork : pomodoroBreak) * 60;
           if (mode === "sprint") return sprintWork * 60;
@@ -246,28 +205,20 @@
           return () => clearInterval(timerRef.current);
         }, [timerRunning]);
 
-        function startTimer() { setTimerRunning(true); setTimerComplete(false); }
-        function pauseTimer() { setTimerRunning(false); clearInterval(timerRef.current); }
-        function resetTimer() { setTimerRunning(false); setTimerComplete(false); clearInterval(timerRef.current); setTimerPhase("work"); setSecondsLeft(getCurrentDuration(focusMode, "work")); }
-        function startBreak() { setTimerPhase("break"); setTimerComplete(false); setSecondsLeft(getCurrentDuration(focusMode, "break")); setTimerRunning(true); }
+        function startTimer()  { setTimerRunning(true); setTimerComplete(false); }
+        function pauseTimer()  { setTimerRunning(false); clearInterval(timerRef.current); }
+        function resetTimer()  { setTimerRunning(false); setTimerComplete(false); clearInterval(timerRef.current); setTimerPhase("work"); setSecondsLeft(getCurrentDuration(focusMode, "work")); }
+        function startBreak()  { setTimerPhase("break"); setTimerComplete(false); setSecondsLeft(getCurrentDuration(focusMode, "break")); setTimerRunning(true); }
         function toggleLinkedTask(id) { setLinkedTaskIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]); }
-        function completeLinkedTasks() {
-          linkedTaskIds.forEach(id => {
-            const t = tasks.find(x => x.id === id);
-            if (t && !t.done) animateTaskComplete(id);
-          });
-        }
+        function completeLinkedTasks() { linkedTaskIds.forEach(id => { const t = tasks.find(x => x.id === id); if (t && !t.done) animateTaskComplete(id); }); }
 
-        const currentMode = FOCUS_MODES.find(m => m.id === focusMode);
-        const totalDuration = getCurrentDuration(focusMode, timerPhase);
-        const progressAngle = ((totalDuration - secondsLeft) / totalDuration) * 360;
-        const linkedTasks = tasks.filter(t => linkedTaskIds.includes(t.id));
+        const currentMode    = FOCUS_MODES.find(m => m.id === focusMode);
+        const totalDuration  = getCurrentDuration(focusMode, timerPhase);
+        const progressAngle  = ((totalDuration - secondsLeft) / totalDuration) * 360;
+        const linkedTasks    = tasks.filter(t => linkedTaskIds.includes(t.id));
         const linkedPendingCount = linkedTasks.filter(t => !t.done).length;
 
-        // ── ANIMATED TASK COMPLETION ──────────────────────────────────────
-        // When a task is ticked, we add it to completingIds (triggering CSS
-        // animation), wait for the animation to finish, then mark it done
-        // in state and pulse the Completed tab.
+        // ── ANIMATED COMPLETION ──────────────────────────────────────────
         function animateTaskComplete(id) {
           setCompletingIds(prev => [...prev, id]);
           setPointsAnimation(true);
@@ -276,7 +227,6 @@
           setTimeout(() => {
             setTasks(prev => prev.map(t => t.id === id ? { ...t, done: true } : t));
             setCompletingIds(prev => prev.filter(x => x !== id));
-            // Pulse the completed tab
             setCompletedTabPulse(true);
             setTimeout(() => setCompletedTabPulse(false), 400);
           }, 440);
@@ -285,11 +235,8 @@
         function toggleTask(id) {
           const task = tasks.find(t => t.id === id);
           if (!task) return;
-          if (!task.done) {
-            animateTaskComplete(id);
-          } else {
-            setTasks(prev => prev.map(t => t.id === id ? { ...t, done: false } : t));
-          }
+          if (!task.done) { animateTaskComplete(id); }
+          else { setTasks(prev => prev.map(t => t.id === id ? { ...t, done: false } : t)); }
         }
 
         function addTask() {
@@ -307,6 +254,7 @@
           setNewCatLabel(""); setNewCatColor("#378ADD");
         }
 
+        // ── STYLES ───────────────────────────────────────────────────────
         const s = {
           app: { fontFamily: "'DM Sans','Helvetica Neue',sans-serif", minHeight: "100vh", background: "#FAFAF8", color: "#1a1a18", maxWidth: 480, margin: "0 auto", paddingBottom: 80 },
           header: { padding: "28px 24px 0" },
@@ -341,21 +289,26 @@
         };
 
         // ── DRAGGABLE TASK ROW ────────────────────────────────────────────
-        function DraggableTaskRow({ task, index, dragIdx, dragOverIdx, dragHandlers, itemRef, onToggle, onDelete }) {
+        // The outer div handles dragOver + drop.
+        // Only the ⠿ handle div is draggable — this prevents accidental
+        // drags when tapping the checkbox or task title.
+        function DraggableTaskRow({ task, onToggle, onDelete }) {
           const cat = getCat(task.categoryId);
-          const isDragging = dragIdx === index;
-          const isOver = dragOverIdx === index && dragIdx !== index;
+          const isDragging = dragId === task.id;
+          const isOver     = dragOverId === task.id && dragId !== task.id;
           const isCompleting = completingIds.includes(task.id);
           return (
             <div
-              ref={el => { if (itemRef) itemRef.current[index] = el; }}
               className={isCompleting ? "task-completing" : ""}
               style={s.taskItem(task.done, isDragging, isOver)}
+              onDragOver={e => onDragOver(e, task.id)}
+              onDrop={e => onDrop(e, task.id)}
             >
-              {/* Drag handle — only the handle initiates drag */}
               <div
-                {...dragHandlers(index)}
-                style={{ color: "#ccc", fontSize: 14, flexShrink: 0, padding: "0 4px 0 0", touchAction: "none", cursor: "grab", userSelect: "none" }}
+                draggable
+                onDragStart={() => onDragStart(task.id)}
+                onDragEnd={onDragEnd}
+                style={{ color: "#ccc", fontSize: 16, flexShrink: 0, padding: "0 4px 0 0", cursor: "grab", userSelect: "none" }}
               >⠿</div>
               <div style={s.checkbox(task.done, cat.color)} onClick={() => onToggle(task.id)}>
                 {task.done && <svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 4L3.5 6.5L9 1" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
@@ -371,7 +324,7 @@
           );
         }
 
-        // ── STATIC TASK ROW (done tasks, no drag) ────────────────────────
+        // ── STATIC TASK ROW ───────────────────────────────────────────────
         function StaticTaskRow({ task, onToggle }) {
           const cat = getCat(task.categoryId);
           return (
@@ -389,14 +342,15 @@
           );
         }
 
+        // ── RENDER ───────────────────────────────────────────────────────
         return (
           <div style={s.app}>
             <div style={s.header}>
               <div style={s.greeting}>{view === "dashboard" ? "Today" : view === "tasks" ? "Tasks" : view === "focus" ? "Focus" : "Settings"}</div>
               <div style={s.sub}>
                 {view === "dashboard" ? `${completedToday} of ${totalTasks} tasks done · ${streak} day streak 🔥`
-                  : view === "tasks" ? `${tasks.filter(t=>!t.done).length} pending · ${tasks.filter(t=>t.done).length} done`
-                  : view === "focus" ? `${sessionCount} session${sessionCount !== 1 ? "s" : ""} completed today`
+                  : view === "tasks"     ? `${tasks.filter(t=>!t.done).length} pending · ${tasks.filter(t=>t.done).length} done`
+                  : view === "focus"     ? `${sessionCount} session${sessionCount !== 1 ? "s" : ""} completed today`
                   : "Manage categories & goals"}
               </div>
             </div>
@@ -421,10 +375,10 @@
                 </div>
 
                 {categories.map(cat => {
-                  const catTasks = tasks.filter(t => t.categoryId === cat.id);
-                  const catDone = catTasks.filter(t => t.done).length;
+                  const catTasks  = tasks.filter(t => t.categoryId === cat.id);
+                  const catDone   = catTasks.filter(t => t.done).length;
                   const catEarned = catTasks.filter(t => t.done).reduce((sum, t) => sum + t.points, 0);
-                  const catTotal = catTasks.reduce((sum, t) => sum + t.points, 0);
+                  const catTotal  = catTasks.reduce((sum, t) => sum + t.points, 0);
                   if (catTasks.length === 0) return null;
                   const pct = Math.round((catDone / catTasks.length) * 100);
                   return (
@@ -449,7 +403,6 @@
                   );
                 })}
 
-                {/* Category filter pills */}
                 <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4, marginBottom: 12 }}>
                   {[{ id: "all", label: "All", color: "#888780" }, ...categories].map(cat => (
                     <button key={cat.id} onClick={() => { setDashFilterCat(cat.id); setShowAllTasks(false); }}
@@ -461,80 +414,26 @@
 
                 {tasks.length === 0 && <div style={{ textAlign: "center", padding: "40px 0", color: "#aaa", fontSize: 14 }}>No tasks yet. Tap + to add your first one.</div>}
 
-                {/* ── BROWSER-STYLE TABS ── */}
                 {tasks.length > 0 && (
                   <>
-                    <div style={{ display: "flex", gap: 0, marginBottom: 0, borderBottom: "0.5px solid #E5E3DC" }}>
-                      {/* Up next tab */}
-                      <button
-                        onClick={() => setDashTab("pending")}
-                        style={{
-                          flex: 1, padding: "10px 0", fontSize: 12, fontWeight: dashTab === "pending" ? 600 : 400,
-                          color: dashTab === "pending" ? "#1a1a18" : "#aaa",
-                          background: dashTab === "pending" ? "#fff" : "#F5F4F0",
-                          border: "0.5px solid #E5E3DC",
-                          borderBottom: dashTab === "pending" ? "none" : "0.5px solid #E5E3DC",
-                          borderRadius: "10px 10px 0 0",
-                          cursor: "pointer", fontFamily: "inherit",
-                          marginBottom: dashTab === "pending" ? "-0.5px" : 0,
-                          letterSpacing: "0.4px",
-                          transition: "all 0.2s",
-                        }}>
+                    {/* Browser-style tabs */}
+                    <div style={{ display: "flex", borderBottom: "0.5px solid #E5E3DC" }}>
+                      <button onClick={() => setDashTab("pending")} style={{ flex: 1, padding: "10px 0", fontSize: 12, fontWeight: dashTab === "pending" ? 600 : 400, color: dashTab === "pending" ? "#1a1a18" : "#aaa", background: dashTab === "pending" ? "#fff" : "#F5F4F0", border: "0.5px solid #E5E3DC", borderBottom: dashTab === "pending" ? "none" : "0.5px solid #E5E3DC", borderRadius: "10px 10px 0 0", cursor: "pointer", fontFamily: "inherit", marginBottom: dashTab === "pending" ? "-0.5px" : 0, letterSpacing: "0.4px", transition: "all 0.2s" }}>
                         UP NEXT
-                        {dashPendingAll.length > 0 && (
-                          <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, background: "#1a1a18", color: "#fff", borderRadius: 99, padding: "1px 6px" }}>
-                            {dashPendingAll.length}
-                          </span>
-                        )}
+                        {dashPendingAll.length > 0 && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, background: "#1a1a18", color: "#fff", borderRadius: 99, padding: "1px 6px" }}>{dashPendingAll.length}</span>}
                       </button>
-
-                      {/* Completed tab */}
-                      <button
-                        ref={completedTabRef}
-                        onClick={() => setDashTab("completed")}
-                        className={completedTabPulse ? "tab-pulse" : ""}
-                        style={{
-                          flex: 1, padding: "10px 0", fontSize: 12, fontWeight: dashTab === "completed" ? 600 : 400,
-                          color: dashTab === "completed" ? "#1a1a18" : "#aaa",
-                          background: dashTab === "completed" ? "#fff" : "#F5F4F0",
-                          border: "0.5px solid #E5E3DC",
-                          borderBottom: dashTab === "completed" ? "none" : "0.5px solid #E5E3DC",
-                          borderRadius: "10px 10px 0 0",
-                          cursor: "pointer", fontFamily: "inherit",
-                          marginBottom: dashTab === "completed" ? "-0.5px" : 0,
-                          letterSpacing: "0.4px",
-                          transition: "all 0.2s",
-                        }}>
+                      <button onClick={() => setDashTab("completed")} className={completedTabPulse ? "tab-pulse" : ""} style={{ flex: 1, padding: "10px 0", fontSize: 12, fontWeight: dashTab === "completed" ? 600 : 400, color: dashTab === "completed" ? "#1a1a18" : "#aaa", background: dashTab === "completed" ? "#fff" : "#F5F4F0", border: "0.5px solid #E5E3DC", borderBottom: dashTab === "completed" ? "none" : "0.5px solid #E5E3DC", borderRadius: "10px 10px 0 0", cursor: "pointer", fontFamily: "inherit", marginBottom: dashTab === "completed" ? "-0.5px" : 0, letterSpacing: "0.4px", transition: "all 0.2s" }}>
                         COMPLETED
-                        {dashDone.length > 0 && (
-                          <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, background: "#1D9E75", color: "#fff", borderRadius: 99, padding: "1px 6px" }}>
-                            {dashDone.length}
-                          </span>
-                        )}
+                        {dashDone.length > 0 && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, background: "#1D9E75", color: "#fff", borderRadius: 99, padding: "1px 6px" }}>{dashDone.length}</span>}
                       </button>
                     </div>
 
-                    {/* Tab content */}
                     <div style={{ background: "#fff", border: "0.5px solid #E5E3DC", borderTop: "none", borderRadius: "0 0 12px 12px", padding: "12px", marginBottom: 16 }}>
-
-                      {/* UP NEXT panel */}
                       {dashTab === "pending" && (
                         <>
-                          {dashPendingAll.length === 0 && (
-                            <div style={{ textAlign: "center", padding: "24px 0", color: "#aaa", fontSize: 13 }}>All tasks complete! 🎉</div>
-                          )}
-                          {dashPendingAll.map((task, index) => (
-                            <DraggableTaskRow
-                              key={task.id}
-                              task={task}
-                              index={index}
-                              dragIdx={dashDragIdx}
-                              dragOverIdx={dashDragOver}
-                              dragHandlers={getDashDragHandlers}
-                              itemRef={dashItemRefs}
-                              onToggle={toggleTask}
-                              onDelete={deleteTask}
-                            />
+                          {dashPendingAll.length === 0 && <div style={{ textAlign: "center", padding: "24px 0", color: "#aaa", fontSize: 13 }}>All tasks complete! 🎉</div>}
+                          {dashPendingAll.map(task => (
+                            <DraggableTaskRow key={task.id} task={task} onToggle={toggleTask} onDelete={deleteTask} />
                           ))}
                           {!showAllTasks && dashPendingAll.length > 10 && (
                             <div style={{ textAlign: "center", fontSize: 12, color: "#aaa", marginTop: 6, cursor: "pointer" }} onClick={() => setShowAllTasks(true)}>
@@ -548,16 +447,10 @@
                           )}
                         </>
                       )}
-
-                      {/* COMPLETED panel */}
                       {dashTab === "completed" && (
                         <>
-                          {dashDone.length === 0 && (
-                            <div style={{ textAlign: "center", padding: "24px 0", color: "#aaa", fontSize: 13 }}>No tasks completed yet today.</div>
-                          )}
-                          {dashDone.map(task => (
-                            <StaticTaskRow key={task.id} task={task} onToggle={toggleTask} />
-                          ))}
+                          {dashDone.length === 0 && <div style={{ textAlign: "center", padding: "24px 0", color: "#aaa", fontSize: 13 }}>No tasks completed yet today.</div>}
+                          {dashDone.map(task => <StaticTaskRow key={task.id} task={task} onToggle={toggleTask} />)}
                         </>
                       )}
                     </div>
@@ -577,29 +470,15 @@
                     </button>
                   ))}
                 </div>
-
                 {pendingTasks.length > 0 && (
                   <>
                     <div style={{ ...s.sectionTitle, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                       <span>Pending</span>
-                      <span style={{ fontSize: 10, color: "#ccc", fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>hold ⠿ to reorder</span>
+                      <span style={{ fontSize: 10, color: "#ccc", fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>drag ⠿ to reorder</span>
                     </div>
-                    {pendingTasks.map((task, index) => (
-                      <DraggableTaskRow
-                        key={task.id}
-                        task={task}
-                        index={index}
-                        dragIdx={tasksDragIdx}
-                        dragOverIdx={tasksDragOver}
-                        dragHandlers={getTasksDragHandlers}
-                        itemRef={tasksItemRefs}
-                        onToggle={toggleTask}
-                        onDelete={deleteTask}
-                      />
-                    ))}
+                    {pendingTasks.map(task => <DraggableTaskRow key={task.id} task={task} onToggle={toggleTask} onDelete={deleteTask} />)}
                   </>
                 )}
-
                 {doneTasks.length > 0 && (
                   <>
                     <div style={s.sectionTitle}>Done</div>
@@ -622,7 +501,6 @@
                     </button>
                   ))}
                 </div>
-
                 <div style={{ display: "flex", justifyContent: "center", marginBottom: 24 }}>
                   <div style={{ position: "relative", width: 220, height: 220, display: "flex", alignItems: "center", justifyContent: "center" }}>
                     <TimerRing progress={progressAngle} color={currentMode.color} />
@@ -633,7 +511,6 @@
                     </div>
                   </div>
                 </div>
-
                 <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
                   {!timerRunning && !timerComplete && <button onClick={startTimer} style={{ ...s.btn("primary", currentMode.color), flex: 2 }}>{secondsLeft === getCurrentDuration(focusMode, timerPhase) ? "Start" : "Resume"}</button>}
                   {timerRunning && <button onClick={pauseTimer} style={{ ...s.btn("secondary"), flex: 2 }}>Pause</button>}
@@ -641,13 +518,11 @@
                   {timerComplete && (timerPhase === "break" || focusMode !== "pomodoro") && <button onClick={resetTimer} style={{ ...s.btn("primary", currentMode.color), flex: 2 }}>New session</button>}
                   <button onClick={resetTimer} style={{ ...s.btn("ghost"), flex: 1 }}>Reset</button>
                 </div>
-
                 {linkedTaskIds.length > 0 && linkedPendingCount > 0 && (
                   <button onClick={completeLinkedTasks} style={{ ...s.btn("primary", currentMode.color), width: "100%", marginBottom: 12, textAlign: "center" }}>
                     ✓ Mark {linkedPendingCount} linked task{linkedPendingCount !== 1 ? "s" : ""} as done
                   </button>
                 )}
-
                 <div style={s.card}>
                   <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Tasks for this session <span style={{ fontSize: 11, color: "#aaa", fontWeight: 400 }}>— tick to link</span></div>
                   {tasks.filter(t => !t.done).length === 0 && <div style={{ fontSize: 13, color: "#aaa" }}>No pending tasks. Add some first.</div>}
@@ -680,7 +555,6 @@
                     );
                   })}
                 </div>
-
                 <button onClick={() => setShowTimerSettings(!showTimerSettings)}
                   style={{ background: "none", border: "none", fontSize: 12, color: "#aaa", cursor: "pointer", padding: "4px 0", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 4 }}>
                   ⚙ Customise durations {showTimerSettings ? "↑" : "↓"}
