@@ -47,6 +47,86 @@
         { id: "deep",     label: "Deep Work", icon: "🎯", color: "#378ADD", defaultWork: 90, defaultBreak: 0 },
       ];
 
+      // ── localStorage HELPERS ──────────────────────────────────────────────
+      //
+      // Think of localStorage as a tiny dictionary that lives in the browser.
+      // It stores everything as plain text (strings), so we use JSON.stringify
+      // to convert our JavaScript values INTO text when saving, and JSON.parse
+      // to convert the text BACK into JavaScript values when loading.
+      //
+      // loadFromStorage(key, fallback)
+      //   • Looks up "key" in localStorage.
+      //   • If found, parses the JSON text and returns the value.
+      //   • If nothing is stored yet (first visit), returns `fallback` instead.
+      //
+      // saveToStorage(key, value)
+      //   • Converts `value` to a JSON string and stores it under "key".
+      //
+      // Storage keys we use (all prefixed "ff:" so they don't clash with other
+      // apps that might share the same browser origin):
+      //   ff:tasks        – the tasks array
+      //   ff:categories   – the categories array
+      //   ff:dailyGoal    – the numeric daily points goal
+      //   ff:focusMode    – active focus mode id ("pomodoro" | "sprint" | "deep")
+      //   ff:pomodoroWork – custom pomodoro work duration (minutes)
+      //   ff:pomodoroBreak– custom pomodoro break duration (minutes)
+      //   ff:sprintWork   – custom sprint duration (minutes)
+      //   ff:deepWork     – custom deep work duration (minutes)
+      //   ff:sessionCount – number of focus sessions completed today
+
+      function loadFromStorage(key, fallback) {
+        try {
+          const raw = localStorage.getItem(key);
+          // getItem returns null when the key doesn't exist yet
+          if (raw === null) return fallback;
+          return JSON.parse(raw);
+        } catch {
+          // If parsing somehow fails, return the safe fallback
+          return fallback;
+        }
+      }
+
+      function saveToStorage(key, value) {
+        try {
+          localStorage.setItem(key, JSON.stringify(value));
+        } catch {
+          // localStorage can throw if the user has blocked storage or the
+          // quota is full. We silently ignore it — the app still works,
+          // just without persistence for that save.
+        }
+      }
+
+      // ── PERSIST HOOK ──────────────────────────────────────────────────────
+      //
+      // usePersistentState is a drop-in replacement for useState that also
+      // reads from / writes to localStorage automatically.
+      //
+      // How it works:
+      //  1. Instead of useState(defaultValue), we call
+      //     useState(() => loadFromStorage(key, defaultValue)).
+      //     The arrow function form is called "lazy initialisation" — React
+      //     only runs it once, on the very first render, which is exactly
+      //     when we want to read from storage.
+      //
+      //  2. We attach a useEffect that watches the state variable. Whenever
+      //     it changes, we immediately write the new value back to storage.
+      //     This way storage is always up-to-date with whatever React has.
+      //
+      //  3. We return [state, setState] — exactly the same shape as useState,
+      //     so the rest of the app doesn't need to change at all.
+
+      function usePersistentState(key, defaultValue) {
+        // Lazy initialiser: runs once on mount, reads from localStorage
+        const [state, setState] = useState(() => loadFromStorage(key, defaultValue));
+
+        // Sync to localStorage every time the value changes
+        useEffect(() => {
+          saveToStorage(key, state);
+        }, [key, state]);
+
+        return [state, setState];
+      }
+
       function formatTime(seconds) {
         const m = Math.floor(seconds / 60).toString().padStart(2, "0");
         const s = (seconds % 60).toString().padStart(2, "0");
@@ -84,16 +164,11 @@
       }
 
       // ── DRAG HOOK ─────────────────────────────────────────────────────────
-      // Uses task IDs as the source of truth — much more reliable than indexes.
-      // Only the ⠿ handle triggers drag. Works on desktop and mobile via
-      // HTML5 drag events on the handle div itself.
       function useDrag(setTasks) {
         const [dragId, setDragId] = useState(null);
         const [dragOverId, setDragOverId] = useState(null);
 
-        function onDragStart(id) {
-          setDragId(id);
-        }
+        function onDragStart(id) { setDragId(id); }
 
         function onDragOver(e, id) {
           e.preventDefault();
@@ -111,59 +186,64 @@
               const [moved] = arr.splice(fromIdx, 1);
               arr.splice(toIdx, 0, moved);
               return arr;
+              // Note: because tasks is a persistent state, this reorder is
+              // automatically saved to localStorage by our usePersistentState hook.
             });
           }
           setDragId(null);
           setDragOverId(null);
         }
 
-        function onDragEnd() {
-          setDragId(null);
-          setDragOverId(null);
-        }
+        function onDragEnd() { setDragId(null); setDragOverId(null); }
 
         return { dragId, dragOverId, onDragStart, onDragOver, onDrop, onDragEnd };
       }
 
       function ProductivityApp() {
-        const [tasks, setTasks] = useState([]);
-        const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
-        const [view, setView] = useState("dashboard");
-        const [newTask, setNewTask] = useState({ title: "", categoryId: "work", points: 3, note: "" });
-        const [showAddTask, setShowAddTask] = useState(false);
-        const [pointsAnimation, setPointsAnimation] = useState(false);
-        const [totalPoints, setTotalPoints] = useState(0);
-        const [dailyGoal, setDailyGoal] = useState(20);
-        const [editingCategory, setEditingCategory] = useState(null);
-        const [newCatLabel, setNewCatLabel] = useState("");
-        const [newCatColor, setNewCatColor] = useState("#378ADD");
-        const [filterCat, setFilterCat] = useState("all");
-        const [streak] = useState(3);
-        const [dashFilterCat, setDashFilterCat] = useState("all");
-        const [showAllTasks, setShowAllTasks] = useState(false);
+        // ── PERSISTENT STATE ──────────────────────────────────────────────
+        // These four lines are the only change needed to make tasks,
+        // categories, the daily goal, and timer settings survive a refresh.
+        // Everything else in the component stays exactly the same — the
+        // setter functions (setTasks, setCategories, etc.) work identically
+        // to plain useState setters.
+        const [tasks,        setTasks]        = usePersistentState("ff:tasks",        []);
+        const [categories,   setCategories]   = usePersistentState("ff:categories",   DEFAULT_CATEGORIES);
+        const [dailyGoal,    setDailyGoal]    = usePersistentState("ff:dailyGoal",    20);
+        const [focusMode,    setFocusMode]    = usePersistentState("ff:focusMode",    "pomodoro");
+        const [pomodoroWork, setPomodoroWork] = usePersistentState("ff:pomodoroWork", 25);
+        const [pomodoroBreak,setPomodoroBreak]= usePersistentState("ff:pomodoroBreak",5);
+        const [sprintWork,   setSprintWork]   = usePersistentState("ff:sprintWork",   15);
+        const [deepWork,     setDeepWork]     = usePersistentState("ff:deepWork",     90);
+        const [sessionCount, setSessionCount] = usePersistentState("ff:sessionCount", 0);
+
+        // ── TRANSIENT STATE ───────────────────────────────────────────────
+        // These don't need to survive a refresh — they're fine as plain useState.
+        const [view,              setView]              = useState("dashboard");
+        const [newTask,           setNewTask]           = useState({ title: "", categoryId: "work", points: 3, note: "" });
+        const [showAddTask,       setShowAddTask]       = useState(false);
+        const [pointsAnimation,   setPointsAnimation]   = useState(false);
+        const [totalPoints,       setTotalPoints]       = useState(0);
+        const [editingCategory,   setEditingCategory]   = useState(null);
+        const [newCatLabel,       setNewCatLabel]       = useState("");
+        const [newCatColor,       setNewCatColor]       = useState("#378ADD");
+        const [filterCat,         setFilterCat]         = useState("all");
+        const [streak]                                  = useState(3);
+        const [dashFilterCat,     setDashFilterCat]     = useState("all");
+        const [showAllTasks,      setShowAllTasks]      = useState(false);
         const animRef = useRef(null);
 
-        // Dashboard tabs
-        const [dashTab, setDashTab] = useState("pending");
-        const [completingIds, setCompletingIds] = useState([]);
+        const [dashTab,           setDashTab]           = useState("pending");
+        const [completingIds,     setCompletingIds]     = useState([]);
         const [completedTabPulse, setCompletedTabPulse] = useState(false);
 
-        // Focus state
-        const [focusMode, setFocusMode] = useState("pomodoro");
-        const [timerPhase, setTimerPhase] = useState("work");
-        const [timerRunning, setTimerRunning] = useState(false);
-        const [timerComplete, setTimerComplete] = useState(false);
-        const [secondsLeft, setSecondsLeft] = useState(25 * 60);
-        const [linkedTaskIds, setLinkedTaskIds] = useState([]);
-        const [sessionCount, setSessionCount] = useState(0);
-        const [pomodoroWork, setPomodoroWork] = useState(25);
-        const [pomodoroBreak, setPomodoroBreak] = useState(5);
-        const [sprintWork, setSprintWork] = useState(15);
-        const [deepWork, setDeepWork] = useState(90);
+        const [timerPhase,        setTimerPhase]        = useState("work");
+        const [timerRunning,      setTimerRunning]      = useState(false);
+        const [timerComplete,     setTimerComplete]     = useState(false);
+        const [secondsLeft,       setSecondsLeft]       = useState(25 * 60);
+        const [linkedTaskIds,     setLinkedTaskIds]     = useState([]);
         const [showTimerSettings, setShowTimerSettings] = useState(false);
         const timerRef = useRef(null);
 
-        // Single shared drag instance — works across both Today and Tasks tabs
         const { dragId, dragOverId, onDragStart, onDragOver, onDrop, onDragEnd } = useDrag(setTasks);
 
         // ── DERIVED ──────────────────────────────────────────────────────
@@ -247,6 +327,7 @@
         }
 
         function deleteTask(id) { setTasks(prev => prev.filter(t => t.id !== id)); }
+
         function getCat(id) { return categories.find(c => c.id === id) || categories[0]; }
         function addCategory() {
           if (!newCatLabel.trim()) return;
@@ -289,9 +370,6 @@
         };
 
         // ── DRAGGABLE TASK ROW ────────────────────────────────────────────
-        // The outer div handles dragOver + drop.
-        // Only the ⠿ handle div is draggable — this prevents accidental
-        // drags when tapping the checkbox or task title.
         function DraggableTaskRow({ task, onToggle, onDelete }) {
           const cat = getCat(task.categoryId);
           const isDragging = dragId === task.id;
@@ -304,12 +382,8 @@
               onDragOver={e => onDragOver(e, task.id)}
               onDrop={e => onDrop(e, task.id)}
             >
-              <div
-                draggable
-                onDragStart={() => onDragStart(task.id)}
-                onDragEnd={onDragEnd}
-                style={{ color: "#ccc", fontSize: 16, flexShrink: 0, padding: "0 4px 0 0", cursor: "grab", userSelect: "none" }}
-              >⠿</div>
+              <div draggable onDragStart={() => onDragStart(task.id)} onDragEnd={onDragEnd}
+                style={{ color: "#ccc", fontSize: 16, flexShrink: 0, padding: "0 4px 0 0", cursor: "grab", userSelect: "none" }}>⠿</div>
               <div style={s.checkbox(task.done, cat.color)} onClick={() => onToggle(task.id)}>
                 {task.done && <svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 4L3.5 6.5L9 1" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
               </div>
@@ -416,7 +490,6 @@
 
                 {tasks.length > 0 && (
                   <>
-                    {/* Browser-style tabs */}
                     <div style={{ display: "flex", borderBottom: "0.5px solid #E5E3DC" }}>
                       <button onClick={() => setDashTab("pending")} style={{ flex: 1, padding: "10px 0", fontSize: 12, fontWeight: dashTab === "pending" ? 600 : 400, color: dashTab === "pending" ? "#1a1a18" : "#aaa", background: dashTab === "pending" ? "#fff" : "#F5F4F0", border: "0.5px solid #E5E3DC", borderBottom: dashTab === "pending" ? "none" : "0.5px solid #E5E3DC", borderRadius: "10px 10px 0 0", cursor: "pointer", fontFamily: "inherit", marginBottom: dashTab === "pending" ? "-0.5px" : 0, letterSpacing: "0.4px", transition: "all 0.2s" }}>
                         UP NEXT
@@ -619,6 +692,25 @@
                     <input placeholder="Category name" value={newCatLabel} onChange={e => setNewCatLabel(e.target.value)} onKeyDown={e => e.key === "Enter" && addCategory()} style={{ ...s.input, marginBottom: 0, flex: 1 }} />
                     <button onClick={addCategory} style={{ ...s.btn("primary"), whiteSpace: "nowrap" }}>Add</button>
                   </div>
+                </div>
+
+                {/* ── CLEAR DATA ── */}
+                {/* A handy escape hatch: wipe all localStorage keys used by this
+                    app and reload the page back to a clean state. */}
+                <div style={{ ...s.card, borderColor: "#FFDEDE" }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4, color: "#C0392B" }}>Reset all data</div>
+                  <div style={{ fontSize: 12, color: "#888780", marginBottom: 12 }}>Clears all tasks, categories, and settings from this browser. This cannot be undone.</div>
+                  <button
+                    onClick={() => {
+                      if (!window.confirm("Reset all Focus Flow data? This cannot be undone.")) return;
+                      ["ff:tasks","ff:categories","ff:dailyGoal","ff:focusMode",
+                       "ff:pomodoroWork","ff:pomodoroBreak","ff:sprintWork",
+                       "ff:deepWork","ff:sessionCount"].forEach(k => localStorage.removeItem(k));
+                      window.location.reload();
+                    }}
+                    style={{ ...s.btn("ghost"), color: "#C0392B", borderColor: "#FFDEDE" }}>
+                    Clear all data
+                  </button>
                 </div>
               </div>
             )}
